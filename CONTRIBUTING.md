@@ -5,7 +5,6 @@
 - [Prerequisites](#prerequisites)
   - [Apple Silicon](#apple-silicon)
   - [Windows WSL](#windows-wsl)
-  - [Linux](#linux)
 - [Setup](#setup)
 - [Development](#development)
   - [Run](#run)
@@ -26,6 +25,7 @@
   - [Adding tests](#adding-tests)
   - [Opening a pull request (PR)](#opening-a-pull-request-pr)
 - [Release](#release)
+  - [Pre-release](#pre-release)
 
 <!-- tocstop -->
 
@@ -35,25 +35,12 @@ Be sure you have these tools installed:
 
 - [Git][]
 
-- [Python][] 3.10 and below.
+- [Python][] 3.10 or below (if using Linux or Mac, we recommend installing via
+  [Pyenv][])
 
-- [Node.js][] v16-v18 (if using Linux or Mac, we recommend installing via [nvm][])
+- [Node.js][] v18 (if using Linux or Mac, we recommend installing via [nvm][])
 
   - [Yarn][] v1.x
-
-- [Rust][]
-
-  - the WebAssembly target for Rust:
-
-    ```sh
-    rustup target add wasm32-unknown-unknown
-    ```
-
-  - `wasm-bindgen` CLI v0.2.84:
-
-    ```sh
-    cargo install --version=0.2.84 wasm-bindgen-cli
-    ```
 
 Depending on your platform, here are some extra instructions:
 
@@ -67,20 +54,20 @@ don't already have it, then run this command:
 brew install pkg-config cairo pango libpng jpeg giflib librsvg pixman
 ```
 
+Note that, because some of these packages depend on Python, your Python version
+may be wrong after this step even if it was correct earlier; for instance, if
+you've never installed Python before so you just have the Python 3.9 that your
+Mac comes preinstalled with, you may think you're OK but then after this step
+you may run `python3 --version` again and find that you now have Python 3.12
+installed. Using [Pyenv][] is a great way to prevent these shenanigans from
+messing with your Penrose setup!
+
 ### Windows WSL
 
 Here are some WSL-specific guides:
 
 - [Guide for installing nvm and Node.js][]
 - [Guide for installing Yarn][]
-
-### Linux
-
-For `wasm-bindgen`, install an OpenSSL development package:
-
-```sh
-apt-get install libssl-dev
-```
 
 ## Setup
 
@@ -153,7 +140,7 @@ Type in the drop-down boxes to search for any Penrose trio in
 `packages/examples/`; for example:
 
 - Substance: `src/set-theory-domain/tree.substance`
-- Style: `src/set-theory-domain/venn.style`
+- Style: `src/set-theory-domain/euler.style`
 - Domain: `src/set-theory-domain/setTheory.domain`
 
 ... and voilà! ✨ See the results in your browser:
@@ -287,7 +274,7 @@ npx nx run core:test-watch
 
 ### README Image
 
-The CI process runs a test that checks whether the set-venn-diagram example generates the same image that goes onto the `README` page. If you made changes to Penrose, it might generate something different from the image on the README page. If this is expected, update the `README` image by doing the following:
+The CI process runs a test that checks whether the set-euler-diagram example generates the same image that goes onto the `README` page. If you made changes to Penrose, it might generate something different from the image on the README page. If this is expected, update the `README` image by doing the following:
 
 - Build `@penrose/roger`
 - Run `.github/gen_readme.js`
@@ -409,7 +396,7 @@ When your work is ready for review:
   reproducing specific examples_, and link(s) to any issue(s) you address).
 - Some things will be checked automatically by our [CI][]:
   - Make sure the system passes the regression tests.
-  - Run [Prettier][] and [rustfmt][] via `yarn format`.
+  - Run [Prettier][] via `yarn format`.
 - If you have permission, request review from the relevant person. Otherwise, no
   worries: we'll take a look at your PR and assign it to a maintainer.
 - When your PR is approved, a maintainer will merge it.
@@ -423,12 +410,32 @@ Our repo uses [semantic versioning][] and maintains the same version number for 
 
 - Make sure all PRs for the upcoming release are merged. Switch to `main` and check `git status` to make sure it's clean and up-to-date.
 - At repo root, run `yarn new-version` to create a new version.
-  - Note that the this script does not modify the Rust crate version in `packages/optimizer/Cargo.{toml,lock}`, which currently must be manually updated.
 - Run `yarn format` to clean up auto-generated file changes.
 - Create a new branch (`git switch --create release-X.Y.Z`) from main and commit the changes.
 - Open a new PR with a title `chore: bump version to X.Y.Z` and merge after CI passes.
 - Create a new [GitHub release][].
 - CI will run after the new release is created, automatically publishing packages to npm.
+
+### Pre-release
+
+To publish development releases:
+
+- Make sure all PRs for the upcoming release are merged. Switch to `main` and check `git status` to make sure it's clean and up-to-date.
+- Create the pre-release version without tagging or committing:
+
+```shell
+yarn lerna version --conventional-commits --conventional-prerelease --no-git-tag-version --no-push
+```
+
+- Run `yarn format` to clean up auto-generated file changes.
+- Create a new branch (`git switch --create release-X.Y.Z`) from main and commit the changes.
+- Publish the pre-release version:
+
+```
+yarn lerna publish from-package --pre-dist-tag develop
+```
+
+- Open a new PR with a title `chore: bump version to X.Y.Z` and merge after CI passes.
 
 [branch]: https://git-scm.com/book/en/v2/Git-Branching-Basic-Branching-and-Merging
 [ci]: https://docs.github.com/en/actions
@@ -451,12 +458,10 @@ Our repo uses [semantic versioning][] and maintains the same version number for 
 [open a pull request]: https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request
 [prettier]: https://prettier.io/
 [push]: https://github.com/git-guides/git-push
+[pyenv]: https://github.com/pyenv/pyenv
 [remote]: https://git-scm.com/book/en/v2/Git-Basics-Working-with-Remotes
-[rust]: https://www.rust-lang.org/tools/install
-[rustfmt]: https://github.com/rust-lang/rustfmt
 [that link]: http://localhost:3000/try/
 [this repo]: https://github.com/penrose/penrose
-[yaml]: https://yaml.org/
 [yarn]: https://classic.yarnpkg.com/lang/en/docs/install/
 [semantic versioning]: https://semver.org
 [github release]: https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository

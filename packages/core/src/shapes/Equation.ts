@@ -1,4 +1,3 @@
-import { FloatV } from "src/types/value.js";
 import * as ad from "../types/ad.js";
 import {
   Center,
@@ -9,7 +8,15 @@ import {
   ShapeCommon,
   String,
 } from "../types/shapes.js";
-import { black, boolV, floatV, strV, vectorV } from "../utils/Util.js";
+import { FloatV } from "../types/value.js";
+import {
+  black,
+  boolV,
+  fakePath,
+  floatV,
+  strV,
+  vectorV,
+} from "../utils/Util.js";
 import { Canvas, Context, uniform } from "./Samplers.js";
 
 export interface EquationProps<T>
@@ -82,4 +89,5 @@ export const makeEquation = (
   ...properties,
   shapeType: "Equation",
   passthrough: new Map(),
+  path: fakePath("defaultEquation"),
 });

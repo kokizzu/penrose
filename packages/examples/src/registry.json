@@ -1,6 +1,6 @@
 {
-  "set-theory-domain/tree-venn": {
-    "name": "Sets as Venn Diagram",
+  "set-theory-domain/tree-euler": {
+    "name": "Sets as Euler Diagram",
     "gallery": true
   },
   "set-theory-domain/tree-tree": {
@@ -23,8 +23,8 @@
     "name": "Quaternions as Cayley graph",
     "gallery": true
   },
-  "set-theory-domain/tree-venn-3d": {
-    "name": "Sets as Venn Diagram in 2.5D",
+  "set-theory-domain/tree-euler-3d": {
+    "name": "Sets as Euler Diagram in 2.5D",
     "gallery": true
   },
   "atoms-and-bonds/one-water-molecule": {
@@ -58,6 +58,10 @@
     "name": "Lewis Structure of Nitric Acid",
     "gallery": false
   },
+  "array-models/insertionSort": {
+    "name": "Insertion Sort",
+    "gallery": true
+  },
   "exterior-algebra/vector-wedge": {
     "name": "Wedge Product",
     "gallery": true
@@ -88,8 +92,8 @@
     "name": "3D Reflections and Shadows",
     "gallery": true
   },
-  "spectral-graphs/examples/grid": {
-    "name": "5x5 Grid",
+  "spectral-graphs/examples/star-graph": {
+    "name": "Star graph",
     "gallery": false
   },
   "spectral-graphs/examples/box": {
@@ -210,6 +214,9 @@
   "geometry-domain/textbook_problems/c11p12": {
     "name": "Circle Example",
     "gallery": true
+  },
+  "molecules/sulfuric-acid": {
+    "name": "Edgeworth Chemistry Example"
   },
   "curve-examples/catmull-rom/catmull-rom": {
     "name": "Catmull-Rom Interpolation Test",
@@ -533,6 +540,74 @@
   },
   "Dynamics/Lyapunov": {
     "name": "Lyapunov Exponent",
+    "gallery": true
+  },
+  "fractals/chaos-game/sierpinski-triangle": {
+    "name": "Chaos Game: Sierpinski Triangle",
+    "gallery": true
+  },
+  "fractals/chaos-game/vicsek-fractal": {
+    "name": "Chaos Game: Vicsek Fractal",
+    "gallery": false
+  },
+  "fractals/l-systems/tree": {
+    "name": "L-System",
+    "gallery": false
+  },
+  "fractals/ifs/ifs": {
+    "name": "Iterated Functions System",
+    "gallery": true
+  },
+  "envelopes/nephroid": {
+    "name": "Nephroid as Envelope of Circles",
+    "gallery": true
+  },
+  "dataviz/linearreg": {
+    "name": "Linear Regression",
+    "gallery": true
+  },
+  "dataviz/residual": {
+    "name": "Linear Regression Residuals",
+    "gallery": false
+  },
+  "geometry-domain/complementary-angles": {
+    "name": "Complementary angles",
+    "gallery": false
+  },
+  "alloy-models/icicle-plot-file-system": {
+    "name": "File System Icicle Plot",
+    "gallery": false
+  },
+  "interactive/ellipse-rays": {
+    "name": "Ellipse Rays",
+    "gallery": true
+  },
+  "interactive/viewport": {
+    "name": "Viewport",
+    "gallery": true
+  },
+  "interactive/planets": {
+    "name": "Planets",
+    "gallery": true
+  },
+  "set-potatoes/relation-not-a-function": {
+    "name": "Relation that isn't a function",
+    "gallery": false
+  },
+  "set-potatoes/injections-post-inverses": {
+    "name": "Injections and Post-Inverses",
+    "gallery": false
+  },
+  "set-potatoes/non-injection-not-monomorphism": {
+    "name": "A non-injection is not a monomorphism",
+    "gallery": false
+  },
+  "set-potatoes/surjections-pre-inverses": {
+    "name": "Surjections and Pre-Inverses",
+    "gallery": false
+  },
+  "set-potatoes/non-surjection-not-epimorphism": {
+    "name": "A non-surjection is not an epimorphism",
     "gallery": true
   }
 }

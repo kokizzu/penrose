@@ -1,4 +1,3 @@
-import { StrV } from "src/types/value.js";
 import * as ad from "../types/ad.js";
 import {
   Fill,
@@ -8,7 +7,16 @@ import {
   ShapeCommon,
   Stroke,
 } from "../types/shapes.js";
-import { black, boolV, floatV, noPaint, ptListV, strV } from "../utils/Util.js";
+import { StrV } from "../types/value.js";
+import {
+  black,
+  boolV,
+  fakePath,
+  floatV,
+  noPaint,
+  ptListV,
+  strV,
+} from "../utils/Util.js";
 import { Canvas, Context } from "./Samplers.js";
 
 export interface PolylineProps<T>
@@ -55,4 +63,5 @@ export const makePolyline = (
   ...properties,
   shapeType: "Polyline",
   passthrough: new Map(),
+  path: fakePath("defaultPolyline"),
 });

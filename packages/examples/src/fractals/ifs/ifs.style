@@ -1,0 +1,114 @@
+-- Settings
+
+canvas {
+  width = 600
+  height = 600
+}
+
+global {
+  scalar alphaScaling = 0.725
+  scalar sizeScaling = 0.925
+  scalar colorShift = 0.7
+  scalar curveTension = .2
+
+  shape background = Rectangle {
+    fillColor: #000000ff
+    center: (0, 0)
+    width: canvas.width
+    height: canvas.height
+  }
+}
+
+-- Object Definitions
+
+forall Transformation f {
+  scalar sx = random(0.55, 0.65)
+  scalar sy = random(0.55, 0.65)
+  scalar theta = random(-2, 2)
+  
+  mat2x2 ms = scale2d(sx, sy)
+  mat2x2 mr = rotate2d(theta)
+  
+  scalar ox = random(-100, 150)
+  scalar oy = random(-100, 150)
+
+  mat2x2 f.m = ms * mr
+  mat2x2 f.offset = (ox, oy)
+
+  scalar f.hue = ?
+}
+
+forall Seed s {
+  vec2 s.pos = (0, 0)
+  scalar s.hue = ?
+  scalar s.size = 3.5
+  scalar s.alpha = 0.3
+}
+
+-- Logic
+
+forall Point p; Point s; Transformation f 
+where p := NextPoint(s, f) {
+  vec2 p.pos = f.m * s.pos + f.offset
+  scalar p.hue = global.colorShift * s.hue + (1 - global.colorShift) * f.hue
+  scalar p.size = global.sizeScaling * s.size
+  scalar p.alpha = global.alphaScaling * s.alpha
+}
+
+collect Point p into ps
+where OnCurve(p, c)
+foreach Curve c {
+  c.points = listof pos from ps
+}
+
+-- Display Shapes
+
+forall Point p; Point s; Transformation f 
+where p := NextPoint(s, f); DisplayTransformation(f) {
+  shape p.line = Line {
+    start: s.pos
+    end: p.pos
+    strokeColor: hsva( p.hue, 20, 100, p.alpha )
+    strokeWidth: 1
+    ensureOnCanvas: false
+  }
+  p.line above global.background
+}
+
+forall Point p
+where DisplayPoint(p) {
+  shape p.blur = Circle {
+    center: p.pos
+    r: p.size
+    fillColor: hsva( p.hue, 60, 100, 0.4 )
+    style: "filter: blur(2px)"
+    ensureOnCanvas: false
+  }
+  shape p.icon = Circle {
+    center: p.pos
+    r: 1
+    fillColor: hsva( p.hue, 60, 100, 1 )
+    ensureOnCanvas: false
+  }
+  p.icon above p.blur
+  p.blur above global.background
+}
+
+forall Curve c {
+  shape curve = Path {
+    d: interpolatingSpline( "open", c.points, global.curveTension )
+    strokeColor: #ffffff1c
+    strokeWidth: .3
+    strokeLinejoin: "round"
+    ensureOnCanvas: false
+  }
+  shape curve2 = Path {
+    d: interpolatingSpline( "open", c.points, global.curveTension )
+    strokeColor: #0bd0f31c
+    strokeWidth: 1
+    strokeLinejoin: "round"
+    ensureOnCanvas: false
+     style: "filter: blur(2px)"
+  }
+  curve above curve2
+}

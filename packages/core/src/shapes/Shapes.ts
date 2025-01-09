@@ -1,6 +1,8 @@
 import { add, div, maxN, minN, sub } from "../engine/AutodiffFunctions.js";
 import * as BBox from "../engine/BBox.js";
 import * as ad from "../types/ad.js";
+import { isVar } from "../types/ad.js";
+import { unwrap } from "../utils/Util.js";
 import { Circle, CircleProps, sampleCircle } from "./Circle.js";
 import { Ellipse, EllipseProps, sampleEllipse } from "./Ellipse.js";
 import { Equation, EquationProps, sampleEquation } from "./Equation.js";
@@ -53,7 +55,11 @@ export const computeShapeBbox = (shape: Shape<ad.Num>): BBox.BBox => {
     case "Text":
       return BBox.bboxFromRectlike(shape);
     case "Line":
-      return BBox.bboxFromLinelike(shape);
+      return BBox.bboxFromLinelike.rose(
+        shape.start.contents,
+        shape.end.contents,
+        shape.strokeWidth.contents,
+      );
     case "Path":
       return BBox.bboxFromPath(shape);
     case "Polygon":
@@ -106,7 +112,7 @@ const bboxFromGroup = ({ shapes, clipPath }: GroupProps<ad.Num>): BBox.BBox => {
 
   const bboxClipPath = computeShapeBbox(clipPath.contents.contents);
 
-  return BBox.intersectBbox(bboxAllMembers, bboxClipPath);
+  return BBox.intersectBbox.rose(bboxAllMembers, bboxClipPath);
 };
 
 export const shapeTypes = [
@@ -128,15 +134,71 @@ export const sampleShape = (
   context: Context,
   canvas: Canvas,
 ): ShapeProps<ad.Num> => {
-  const sampler = shapeSampler.get(shapeType);
-  if (sampler) {
-    return sampler(context, canvas);
-  }
-  throw new Error("shapeType not in sampler");
+  const sampler = unwrap(
+    shapeSampler.get(shapeType),
+    () => `shapeType not in sampler: ${shapeType}`,
+  );
+  return sampler(context, canvas);
 };
 
 // TODO: don't use a type predicate for this
 export const isShapeType = (shapeType: string): shapeType is ShapeType =>
   shapeSampler.has(shapeType);
+
+export const isTranslatable = (shape: Shape<ad.Num>): boolean => {
+  switch (shape.shapeType) {
+    case "Circle":
+    case "Ellipse":
+    case "Equation":
+    case "Image":
+    case "Rectangle":
+    case "Text":
+      return isVar(shape.center.contents[0]) && isVar(shape.center.contents[1]);
+
+    case "Line":
+      return (
+        isVar(shape.start.contents[0]) &&
+        isVar(shape.start.contents[1]) &&
+        isVar(shape.end.contents[0]) &&
+        isVar(shape.end.contents[1])
+      );
+
+    case "Group":
+    case "Path":
+      return false;
+
+    case "Polygon":
+    case "Polyline":
+      for (const point of shape.points.contents) {
+        if (!isVar(point[0]) || !isVar(point[1])) {
+          return false;
+        }
+      }
+      return true;
+  }
+};
+
+export const isScalable = (shape: Shape<ad.Num>): boolean => {
+  switch (shape.shapeType) {
+    case "Circle":
+      return isVar(shape.r.contents);
+
+    case "Ellipse":
+      return isVar(shape.rx.contents) && isVar(shape.ry.contents);
+
+    case "Image":
+    case "Rectangle":
+      return isVar(shape.width.contents) && isVar(shape.height.contents);
+
+    case "Equation":
+    case "Text":
+    case "Group":
+    case "Path":
+    case "Line":
+    case "Polygon":
+    case "Polyline":
+      return false;
+  }
+};
 
 //#endregion

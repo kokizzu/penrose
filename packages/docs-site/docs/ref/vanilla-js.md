@@ -16,7 +16,7 @@ To run this example, copy the code above into an HTML file (e.g. `index.html`) a
 npx http-server .
 ```
 
-You can also check out this example live [here](pathname:///vanilla-js-demo.html).
+You can also check out this example live <a href="/vanilla-js-demo.html" target="_blank">here</a>.
 
 ## Experimental bundled ESM
 
@@ -31,7 +31,7 @@ import { compile, optimize } from "@penrose/core/bundle";
 ```
 
 ::: danger
-`@penrose/optimizer` uses [top-level `await`] and the bundled `core` module currently use [IIFE] around it to provide a seemingly synchronous API. However, be aware that any function imported from `@penrose/core/bundle` might be `undefined` when used immediately after `import`ing. To work around this, do explicit checks on whether the functions are loaded before using them:
+The bundled `core` module currently uses [IIFE] to provide a seemingly synchronous API. However, be aware that any function imported from `@penrose/core/bundle` might be `undefined` when used immediately after `import`ing. To work around this, do explicit checks on whether the functions are loaded before using them:
 
 ```ts
 import { compile, optimize } from "@penrose/core/bundle";
@@ -42,9 +42,6 @@ if (compile && optimize) {
 
 :::
 
-<!--@include: pathname:///vanilla-js-demo.html-->
-
-[top-level `await`]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/await#top_level_await
 [ECMAScript module]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules
 [JSPM]: https://jspm.org/
 [JSPM Generator]: https://generator.jspm.io/

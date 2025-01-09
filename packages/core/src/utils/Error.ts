@@ -5,19 +5,17 @@ import * as ad from "../types/ad.js";
 import {
   A,
   AbstractNode,
-  C,
   Identifier,
   NodeType,
   SourceLoc,
   SourceRange,
 } from "../types/ast.js";
-import { Arg, Type, TypeConstructor } from "../types/domain.js";
+import { Arg, Type } from "../types/domain.js";
 import {
   ArgLengthMismatch,
   BadArgumentTypeError,
   BadShapeParamTypeError,
   CyclicSubtypes,
-  DeconstructNonconstructor,
   DomainError,
   DuplicateName,
   FatalError,
@@ -39,28 +37,30 @@ import {
   SymmetricArgLengthMismatch,
   SymmetricTypeMismatch,
   TooManyArgumentsError,
-  TypeArgLengthMismatch,
+  TypeDeclared,
   TypeMismatch,
   TypeNotFound,
-  UnexpectedExprForNestedPred,
   VarNotFound,
 } from "../types/errors.js";
-import {
-  CompFunc,
-  ConstrFunc,
-  FuncParam,
-  ObjFunc,
-} from "../types/functions.js";
+import { FuncParam, FuncSignature } from "../types/functions.js";
 import { State } from "../types/state.js";
 import { BindingForm, ColorLit } from "../types/style.js";
-import { Deconstructor, SubExpr } from "../types/substance.js";
-import { ArgVal, ArgValWithSourceLoc, ShapeVal, Val } from "../types/value.js";
+import {
+  ResolvedExpr,
+  ResolvedPath,
+  StylePath,
+  StylePathToUnindexedObject,
+} from "../types/stylePathResolution.js";
+import { SubExpr, TypeApp } from "../types/substance.js";
+import { ArgVal, ArgValWithExpr, ShapeVal, Val } from "../types/value.js";
 import {
   ErrorLoc,
   describeType,
   locOrNone,
   prettyPrintPath,
-  prettyPrintResolvedPath,
+  prettyResolvedExpr,
+  prettyResolvedStylePath,
+  subObjectToUniqueName,
   toErrorLoc,
 } from "./Util.js";
 const {
@@ -113,18 +113,8 @@ const showArgValType = (v: ArgVal<ad.Num>): string => {
  * Type pretty printing function.
  * @param t Type to be printed
  */
-export const showType = (t: Type<A>): string => {
-  if (t.tag === "Prop") {
-    return "Prop";
-  } else if (t.tag === "TypeVar") {
-    return `'${t.name.value}`;
-  } else {
-    const { name, args } = t;
-    if (args.length > 0) {
-      const argStrs = args.map(showType);
-      return `${name.value}(${argStrs.join(", ")})`;
-    } else return `${name.value}`;
-  }
+export const showType = (t: Type<A> | TypeApp<A>): string => {
+  return t.name.value;
 };
 // COMBAK What's a better way to model warnings?
 export const styWarnings = [
@@ -133,6 +123,8 @@ export const styWarnings = [
   "DeletedPropWithNoGPIError",
   "DeletedNonexistentFieldError",
 ];
+
+const showPath = (p: StylePath<A>) => prettyResolvedStylePath(p, true);
 
 // TODO: fix template formatting
 export const showError = (
@@ -157,7 +149,16 @@ export const showError = (
         error.color,
       )}) is not a valid color literal. Color literals must be one of the following formats: #RGB, #RGBA, #RRGGBB, #RRGGBBAA.`;
     case "TypeDeclared": {
-      return `Type ${error.typeName.value} already exists.`;
+      const { typeName, firstDefined } = error;
+      if (firstDefined.nodeType === "BuiltinDomain") {
+        return `Type ${typeName.value} (at ${loc(
+          typeName,
+        )}) already exists as a built-in type. Choose a different name for your type to avoid name conflicts.`;
+      } else {
+        return `Type ${typeName.value} (at ${loc(
+          typeName,
+        )}) already exists, first declared at ${loc(firstDefined)}.`;
+      }
     }
     // TODO: abstract out this pattern if it becomes more common
     case "VarNotFound": {
@@ -182,11 +183,6 @@ export const showError = (
         return msg + ` Possible types are: ${suggestions}`;
       } else return msg;
     }
-    case "TypeVarNotFound": {
-      return `Type variable ${error.typeVar.name.value} (at ${loc(
-        error.typeVar,
-      )}) does not exist.`;
-    }
     case "DuplicateName": {
       const { firstDefined, name, location } = error;
       return `Name ${name.value} (at ${loc(
@@ -210,6 +206,18 @@ export const showError = (
         sourceExpr,
       )} must only have two arguments.`;
     }
+    case "OutputLiteralTypeError": {
+      const { type, location } = error;
+      return `The type ${type.name.value} (at ${loc(
+        location,
+      )}) is a built-in literal type that cannot be used as outputs of functions and constructors.`;
+    }
+    case "SubOrSuperLiteralTypeError": {
+      const { type, location } = error;
+      return `The type ${type.name.value} (at ${loc(
+        location,
+      )}) is a built-in literal type that cannot be sub-typed or super-typed.`;
+    }
     case "TypeMismatch": {
       const { sourceExpr, sourceType, expectedExpr, expectedType } = error;
       return `The type of the expression at ${loc(sourceExpr)} '${showType(
@@ -217,16 +225,6 @@ export const showError = (
       )}' does not match with the expected type '${showType(
         expectedType,
       )}' derived from the expression at ${loc(expectedExpr)}.`;
-    }
-    case "TypeArgLengthMismatch": {
-      const { sourceExpr, sourceType, expectedExpr, expectedType } = error;
-      return `${expectedType.args.length} arguments expected for type ${
-        expectedType.name.value
-      } (defined at ${loc(expectedExpr)}), but ${
-        sourceType.args.length
-      } arguments were given for ${sourceType.name.value} at ${loc(
-        sourceExpr,
-      )} `;
     }
     case "ArgLengthMismatch": {
       const { name, argsGiven, argsExpected, sourceExpr, expectedExpr } = error;
@@ -236,22 +234,6 @@ export const showError = (
         argsGiven.length
       } arguments instead at ${loc(sourceExpr)}.`;
     }
-    case "DeconstructNonconstructor": {
-      const { variable, field } = error.deconstructor;
-      return `Because ${variable.value} is not bound to a constructor, ${
-        variable.value
-      }.${field.value} (at ${loc(
-        error.deconstructor,
-      )}) does not correspond to a field value.`;
-    }
-    case "UnexpectedExprForNestedPred": {
-      const { sourceExpr, sourceType, expectedExpr } = error;
-      return `A nested predicate is expected (defined at ${loc(
-        expectedExpr,
-      )}), but an expression of '${showType(
-        sourceType,
-      )}' type was given at ${loc(sourceExpr)}.`;
-    }
     case "InvalidSetIndexingError": {
       const { index, location, suggestions } = error;
       return `Name \`${index}\` (which is used at ${loc(
@@ -259,6 +241,12 @@ export const showError = (
       )}) is not a valid index. Possible indices are: ${suggestions.join(
         ", ",
       )}`;
+    }
+    case "BadSetIndexRangeError": {
+      const { index, location } = error;
+      return `A indexed-set range must consist of integers, but value ${index} (at ${loc(
+        location,
+      )}) is not an integer.`;
     }
     case "DuplicateIndexError": {
       const { index, location } = error;
@@ -282,6 +270,12 @@ export const showError = (
         iset,
       )}) is not supported`;
     }
+    case "DeclLiteralError": {
+      const { location, type } = error;
+      return `Objects of built-in literal type ${type.name.value} (at ${loc(
+        location,
+      )}) cannot be declared explicitly; they can only be inferred from literal data in Substance.`;
+    }
 
     // ---- BEGIN STYLE ERRORS
     // COMBAK suggest improvements after reporting errors
@@ -304,16 +298,6 @@ export const showError = (
       } (${loc(
         error.field,
       )}) because matching on fields is not fully supported. Currently, only "label" can be matched in selectors.`;
-    }
-
-    case "SelectorDeclTypeMismatch": {
-      // COMBAK: Add code for prettyprinting types
-      return "Mismatched types or wrong subtypes between Substance and Style variables in selector";
-    }
-
-    case "SelectorRelTypeMismatch": {
-      // COMBAK: Add code for prettyprinting types
-      return "Mismatched types or wrong subtypes between variable and expression in relational statement in selector";
     }
 
     case "TaggedSubstanceError": {
@@ -380,34 +364,30 @@ export const showError = (
     // --- BEGIN COMPILATION ERRORS
 
     case "AssignAccessError": {
-      return `Cannot directly assign to or delete an index ${prettyPrintPath(
+      return `Cannot directly assign to or delete an index ${showPath(
         error.path,
       )} of a larger structure (at ${loc(error.path)}).`;
     }
 
     case "AssignGlobalError": {
-      return `Cannot assign to global ${prettyPrintResolvedPath(
-        error.path,
-      )} (at ${locc(
-        "Style",
-        error.path,
-      )}); instead, just assign to ${error.path.members
-        .map((id) => id.value)
-        .join(".")} inside the ${error.path.name} namespace.`;
+      const { path } = error;
+      const pathStr = showPath(path);
+      return `Cannot assign to a namespace ${pathStr} (at ${loc(
+        path,
+      )}); instead, assign to individual members of the namespace like ${pathStr}.member`;
     }
 
     case "AssignSubstanceError": {
-      return `Cannot assign to Substance object ${prettyPrintResolvedPath(
+      const { path } = error;
+      return `Cannot assign to Substance object ${showPath(
         error.path,
-      )} (at ${locc("Style", error.path)}).`;
+      )} (at ${loc(path)}).`;
     }
 
     case "BadElementError": {
+      const { coll } = error;
       if (error.coll.tag === "CollectionAccess") {
-        const preamble = `The collection access (at ${locc(
-          "Style",
-          error.coll,
-        )}) failed`;
+        const preamble = `The collection access (at ${loc(coll)}) failed`;
         if (error.index === 0) {
           return (
             preamble +
@@ -428,6 +408,12 @@ export const showError = (
 
     case "BadIndexError": {
       return `Invalid indexing (at ${loc(error.expr)}).`;
+    }
+
+    case "UnindexableItemError": {
+      return `The item \`${showPath(error.expr)}\` (at ${loc(
+        error.expr,
+      )}) is not indexable.`;
     }
 
     case "BinOpTypeError": {
@@ -463,28 +449,64 @@ canvas {
     }
 
     case "DeleteGlobalError": {
-      return `Cannot delete global ${prettyPrintResolvedPath(
-        error.path,
-      )} (at ${locc("Style", error.path)}).`;
-    }
-
-    case "DeleteSubstanceError": {
-      return `Cannot delete Substance object ${prettyPrintResolvedPath(
-        error.path,
-      )} (at ${locc("Style", error.path)}).`;
-    }
-
-    case "MissingPathError": {
-      return `Could not find ${prettyPrintResolvedPath(error.path)} (at ${locc(
-        "Style",
+      return `Cannot delete namespace ${showPath(error.path)} (at ${loc(
         error.path,
       )}).`;
     }
 
-    case "MissingShapeError": {
-      return `Expected to find shape already defined to hold property ${prettyPrintResolvedPath(
+    case "DeleteSubstanceError": {
+      const { path } = error;
+      return `Cannot delete Substance object ${showPath(error.path)} (at ${loc(
+        path,
+      )}).`;
+    }
+
+    case "MissingPathError": {
+      return `Could not find ${showPath(error.path)} (at ${loc(error.path)}).`;
+    }
+
+    case "UndeclaredSubVarError": {
+      return `The substance object ${error.name.value} (at ${loc(
+        error.name,
+      )}) has not been declared in the Style block header.`;
+    }
+
+    case "PathToNamespaceError": {
+      return `The expression ${error.path.name} (at ${loc(
         error.path,
-      )} (at ${locc("Style", error.path)}), found nothing.`;
+      )}) refers to an entire namespace, which is not a value. Such a path cannot appear here. Instead, use a path that refers to a member of this namespace, e.g., \`${
+        error.path.name
+      }.field_name.\``;
+    }
+
+    case "PathToCollectionError": {
+      return `The expression ${error.path.styleName} (at ${loc(
+        error.path,
+      )}) refers to a collection of non-literal values, which cannot appear here. Instead, access information about the collection using operators like \`listof ... from ${
+        error.path.styleName
+      }\` or \`numberof ${error.path.styleName}\``;
+    }
+
+    case "PathToSubstanceError": {
+      return `The expression at ${loc(
+        error.path,
+      )} refers to a non-literal Substance object \`${subObjectToUniqueName(
+        error.path.substanceObject,
+      )}\`, which cannot appear here.`;
+    }
+
+    case "CollectionMemberAccessError": {
+      const { path, field } = error;
+      return `The expression ${showPath(path)} (at ${loc(
+        path,
+      )}) is a collection, and cannot be accessed with the dot-operator. To access field \`${field}\` of each member of the collection, use the collection-access expression \`listof ${field} from ${showPath(
+        path,
+      )}\`.`;
+    }
+
+    case "MissingShapeError": {
+      const { path } = error;
+      return `Path ${showPath(path)} (at ${loc(path)}) cannot be found.`;
     }
 
     case "NestedShapeError": {
@@ -493,18 +515,12 @@ canvas {
       )}) within another shape.`;
     }
 
-    case "NotCollError": {
-      return `Cannot index into a non-collection (at ${loc(error.expr)}).`;
-    }
-
-    case "IndexIntoShapeListError": {
-      return `Cannot index into a list of shapes (at ${loc(error.expr)}).`;
-    }
-
     case "NotShapeError": {
-      return `Expected to find shape to hold property ${prettyPrintResolvedPath(
-        error.path,
-      )} (at ${locc("Style", error.path)}), found ${error.what}.`;
+      const { path, what } = error;
+      const { parent } = path.access;
+      return `Expected to find shape at path ${showPath(parent)} (at ${loc(
+        parent,
+      )}), but found ${what}.`;
     }
 
     case "NotValueError": {
@@ -516,15 +532,9 @@ canvas {
     case "OutOfBoundsError": {
       return `Indices ${error.indices
         .map((i) => `[${i}]`)
-        .join("")} of path ${prettyPrintPath(
-        error.expr,
+        .join("")} of path ${showPath(
+        error.expr.contents,
       )} out of bounds (at ${loc(error.expr)}).`;
-    }
-
-    case "PropertyMemberError": {
-      return `Cannot assign to member ${prettyPrintResolvedPath(
-        error.path,
-      )} of a property (at ${locc("Style", error.path)}).`;
     }
 
     case "UOpTypeError": {
@@ -541,34 +551,34 @@ canvas {
           ? `does not accept type ${error.value.contents.tag}`
           : `does not accept shape ${error.value.contents.shapeType}`;
       const propertyClause = error.passthrough
-        ? `Passthrough shape property ${error.path}`
-        : `Shape property ${error.path}`;
+        ? `Passthrough shape property ${showPath(error.path)}`
+        : `Shape property ${showPath(error.path)}`;
       return `${propertyClause} ${expectedClause} and ${doesNotAcceptClause}.`;
     }
 
     case "BadArgumentTypeError": {
-      const { funcName, funcArg, provided } = error;
+      const { funcName, formalArg, actualArg } = error;
 
-      const { name: argName, type: expectedType } = funcArg;
-      const locStr = locc("Style", provided);
+      const { name: argName, type: expectedType } = formalArg;
+      const locStr = loc(actualArg.expr);
       const strExpectedType = describeType(expectedType).symbol;
-      const strActualType = showArgValType(provided);
+      const strActualType = showArgValType(actualArg);
 
       return `Parameter \`${argName}\` (at ${locStr}) of function \`${funcName}\` expects ${strExpectedType} but is given incompatible ${strActualType}.`;
     }
 
     case "MissingArgumentError": {
-      const { funcName, funcArg, funcLocation } = error;
-      const locStr = locc("Style", funcLocation);
+      const { funcName, formalArg, callExpression } = error;
+      const locStr = loc(callExpression);
 
-      const { name } = funcArg;
+      const { name } = formalArg;
 
       return `Parameter \`${name}\` of function \`${funcName}\` (at ${locStr}) is missing without default value.`;
     }
 
     case "TooManyArgumentsError": {
-      const { func, funcLocation, numProvided } = error;
-      const locStr = locc("Style", funcLocation);
+      const { func, callExpression, numProvided } = error;
+      const locStr = loc(callExpression);
 
       const expNum = func.params.length;
 
@@ -576,8 +586,8 @@ canvas {
     }
 
     case "FunctionInternalError": {
-      const { func, location, message } = error;
-      const locStr = locc("Style", location);
+      const { func, callExpression, message } = error;
+      const locStr = loc(callExpression);
       return `Function \`${func.name}\` (at ${locStr}) failed with message: ${message}`;
     }
     case "RedeclareNamespaceError": {
@@ -587,22 +597,34 @@ canvas {
     }
 
     case "NotSubstanceCollectionError": {
-      const { name, location } = error;
-      const locStr = locc("Style", location);
-      return `The expression at ${locStr} expects \`${name}\` to be a collection.`;
+      const { path } = error;
+      const locStr = loc(path);
+      return `The expression ${showPath(
+        path.contents,
+      )} (at ${locStr}) is not a collection.`;
     }
 
     case "NotStyleVariableError": {
-      const { name, location } = error;
-      const locStr = locc("Style", location);
-      return `The expression at ${locStr} expects \`${name}\` to be a non-collection style variable.`;
+      const { path } = error;
+      const locStr = loc(path);
+      return `The expression ${showPath(
+        path.contents,
+      )} (at ${locStr}) is not a non-collection style variable.`;
     }
 
     case "LayerOnNonShapesError": {
-      const { location, expr } = error;
-      const locStr = locc("Style", location);
-      return `Expects \`${expr}\` (at ${locStr}) to be a shape, but provided with a non-shape.`;
+      const { path } = error;
+      const locStr = loc(path);
+      return `Expects \`${prettyResolvedExpr(
+        path,
+      )}\` (at ${locStr}) to be a shape, but provided with a non-shape.`;
     }
+
+    case "NonWellFormedPathError": {
+      const { path } = error;
+      return `Path ${showPath(path)} (at ${loc(path)}) is not a valid path.`;
+    }
+
     // --- END COMPILATION ERRORS
 
     // TODO(errors): use identifiers here
@@ -619,15 +641,15 @@ canvas {
     // ---- BEGIN STYLE WARNINGS
 
     case "ImplicitOverrideWarning": {
-      return `Implicitly overriding ${prettyPrintResolvedPath(
+      return `Implicitly overriding ${showPath(error.path)} (at ${loc(
         error.path,
-      )} (at ${locc("Style", error.path)}).`;
+      )}).`;
     }
 
     case "NoopDeleteWarning": {
-      return `Deleting nonexistent ${prettyPrintResolvedPath(
+      return `Deleting nonexistent ${showPath(error.path)} (at ${loc(
         error.path,
-      )} (at ${locc("Style", error.path)}).`;
+      )}).`;
     }
 
     case "LayerCycleWarning": {
@@ -655,11 +677,12 @@ canvas {
     case "BBoxApproximationWarning": {
       const topItem = error.stack[error.stack.length - 1];
       const rest = error.stack.slice(0, -1).reverse();
-      const loc =
-        topItem.location === undefined
+      const location =
+        topItem.callExpression === undefined ||
+        !isConcrete(topItem.callExpression)
           ? ""
-          : `(at ${locc("Style", topItem.location)}) `;
-      const topStr = `Function call ${topItem.signature} ${loc}uses bounding box approximations`;
+          : `(at ${loc(topItem.callExpression)}) `;
+      const topStr = `Function call ${topItem.signature} ${location}uses bounding box approximations`;
       const restStrs = rest.map(
         (item) =>
           `- Function call ${item.signature} uses bounding box approximations`,
@@ -701,7 +724,7 @@ export const errLocs = (
         ];
       }
     case "InvalidColorLiteral":
-      return [toErrorLoc(e.color)];
+      return locOrNone(e.color);
     case "TypeDeclared": {
       return locOrNone(e.typeName);
     }
@@ -712,9 +735,6 @@ export const errLocs = (
     case "TypeNotFound": {
       return locOrNone(e.typeName);
     }
-    case "TypeVarNotFound": {
-      return locOrNone(e.typeVar);
-    }
     case "DuplicateName": {
       return locOrNone(e.location);
     }
@@ -724,15 +744,15 @@ export const errLocs = (
     case "SymmetricTypeMismatch":
     case "SymmetricArgLengthMismatch":
     case "TypeMismatch":
-    case "TypeArgLengthMismatch":
-    case "ArgLengthMismatch":
-    case "UnexpectedExprForNestedPred": {
+    case "ArgLengthMismatch": {
       return locOrNone(e.sourceExpr);
     }
-    case "DeconstructNonconstructor": {
-      return locOrNone(e.deconstructor);
+    case "OutputLiteralTypeError":
+    case "SubOrSuperLiteralTypeError": {
+      return locOrNone(e.location);
     }
     case "InvalidSetIndexingError":
+    case "BadSetIndexRangeError":
     case "DuplicateIndexError":
     case "DivideByZeroError":
     case "InvalidArithmeticValueError": {
@@ -740,6 +760,9 @@ export const errLocs = (
     }
     case "UnsupportedIndexingError": {
       return locOrNone(e.iset);
+    }
+    case "DeclLiteralError": {
+      return locOrNone(e.location);
     }
 
     // ---- BEGIN STYLE ERRORS
@@ -755,16 +778,6 @@ export const errLocs = (
 
     case "SelectorFieldNotSupported": {
       return locOrNone(e.field);
-    }
-
-    case "SelectorDeclTypeMismatch": {
-      // COMBAK: Add code for prettyprinting types
-      return locOrNone(e.styType);
-    }
-
-    case "SelectorRelTypeMismatch": {
-      // COMBAK: Add code for prettyprinting types
-      return locOrNone(e.exprType);
     }
 
     case "TaggedSubstanceError": {
@@ -833,23 +846,29 @@ export const errLocs = (
       return cycleLocs;
     }
 
+    case "UndeclaredSubVarError":
+      return locOrNone(e.name);
+
     case "DeleteGlobalError":
     case "DeleteSubstanceError":
     case "MissingPathError":
     case "MissingShapeError":
     case "NotShapeError":
-    case "PropertyMemberError":
     case "AssignGlobalError":
-    case "AssignSubstanceError": {
-      return locOrNone({ ...e.path, nodeType: "Style" });
+    case "AssignSubstanceError":
+    case "NonWellFormedPathError":
+    case "CollectionMemberAccessError":
+    case "PathToCollectionError":
+    case "PathToNamespaceError":
+    case "PathToSubstanceError": {
+      return locOrNone(e.path);
     }
 
     case "NestedShapeError":
-    case "NotCollError":
-    case "IndexIntoShapeListError":
     case "NotValueError":
     case "OutOfBoundsError":
-    case "UOpTypeError": {
+    case "UOpTypeError":
+    case "UnindexableItemError": {
       return locOrNone(e.expr);
     }
 
@@ -859,44 +878,23 @@ export const errLocs = (
     }
 
     case "BadArgumentTypeError": {
-      return [
-        toErrorLoc({
-          nodeType: "Style",
-          start: e.provided.start,
-          end: e.provided.end,
-        }),
-      ];
+      return locOrNone(e.actualArg.expr);
     }
 
-    case "MissingArgumentError": {
-      return [
-        toErrorLoc({
-          ...e.funcLocation,
-          nodeType: "Style",
-        }),
-      ];
+    case "MissingArgumentError":
+    case "TooManyArgumentsError":
+    case "FunctionInternalError": {
+      return locOrNone(e.callExpression);
     }
 
-    case "TooManyArgumentsError": {
-      return [
-        toErrorLoc({
-          ...e.funcLocation,
-          nodeType: "Style",
-        }),
-      ];
+    case "RedeclareNamespaceError": {
+      return [toErrorLoc({ ...e.location, nodeType: "Style" })];
     }
 
-    case "FunctionInternalError":
-    case "RedeclareNamespaceError":
     case "NotSubstanceCollectionError":
     case "NotStyleVariableError":
     case "LayerOnNonShapesError": {
-      return [
-        toErrorLoc({
-          ...e.location,
-          nodeType: "Style",
-        }),
-      ];
+      return locOrNone(e.path);
     }
     // --- END COMPILATION ERRORS
 
@@ -914,8 +912,11 @@ export const errLocs = (
       return locOrNone({ ...e.path, nodeType: "Style" });
     }
     case "BBoxApproximationWarning": {
-      const l = e.stack[e.stack.length - 1].location;
-      return l === undefined ? [] : [toErrorLoc({ ...l, nodeType: "Style" })];
+      const expr = e.stack[e.stack.length - 1].callExpression;
+      if (expr === undefined) {
+        return [];
+      }
+      return locOrNone(expr);
     }
 
     case "LayerCycleWarning":
@@ -944,6 +945,15 @@ export const cyclicSubtypes = (cycles: string[][]): CyclicSubtypes => ({
 });
 
 // action constructors for error
+export const typeDeclared = (
+  typeName: Identifier<A>,
+  firstDefined: AbstractNode,
+): TypeDeclared => ({
+  tag: "TypeDeclared",
+  typeName,
+  firstDefined,
+});
+
 export const duplicateName = (
   name: Identifier<A>,
   location: AbstractNode,
@@ -988,8 +998,8 @@ export const symmetricArgLengthMismatch = (
 });
 
 export const typeMismatch = (
-  sourceType: TypeConstructor<A>,
-  expectedType: TypeConstructor<A>,
+  sourceType: TypeApp<A>,
+  expectedType: Type<A>,
   sourceExpr: AbstractNode,
   expectedExpr: AbstractNode,
 ): TypeMismatch => ({
@@ -998,17 +1008,6 @@ export const typeMismatch = (
   sourceType,
   expectedExpr,
   expectedType,
-});
-
-export const unexpectedExprForNestedPred = (
-  sourceType: TypeConstructor<A>,
-  sourceExpr: AbstractNode,
-  expectedExpr: AbstractNode,
-): UnexpectedExprForNestedPred => ({
-  tag: "UnexpectedExprForNestedPred",
-  sourceType,
-  sourceExpr,
-  expectedExpr,
 });
 
 export const argLengthMismatch = (
@@ -1026,19 +1025,6 @@ export const argLengthMismatch = (
   expectedExpr,
 });
 
-export const typeArgLengthMismatch = (
-  sourceType: TypeConstructor<A>,
-  expectedType: TypeConstructor<A>,
-  sourceExpr: AbstractNode,
-  expectedExpr: AbstractNode,
-): TypeArgLengthMismatch => ({
-  tag: "TypeArgLengthMismatch",
-  sourceExpr,
-  sourceType,
-  expectedExpr,
-  expectedType,
-});
-
 export const selectorFieldNotSupported = (
   name: BindingForm<A>,
   field: Identifier<A>,
@@ -1046,13 +1032,6 @@ export const selectorFieldNotSupported = (
   tag: "SelectorFieldNotSupported",
   name,
   field,
-});
-
-export const deconstructNonconstructor = (
-  deconstructor: Deconstructor<A>,
-): DeconstructNonconstructor => ({
-  tag: "DeconstructNonconstructor",
-  deconstructor,
 });
 
 export const fatalError = (message: string): FatalError => ({
@@ -1072,14 +1051,14 @@ export const parseError = (
 });
 
 export const invalidColorLiteral = (
-  color: ColorLit<C>,
+  color: ColorLit<A>,
 ): InvalidColorLiteral => ({
   tag: "InvalidColorLiteral",
   color,
 });
 
 export const badShapeParamTypeError = (
-  path: string,
+  path: StylePathToUnindexedObject<A>,
   value: Val<ad.Num> | ShapeVal<ad.Num>,
   expectedType: string,
   passthrough: boolean,
@@ -1093,45 +1072,45 @@ export const badShapeParamTypeError = (
 
 export const badArgumentTypeError = (
   funcName: string,
-  funcArg: FuncParam,
-  provided: ArgValWithSourceLoc<ad.Num>,
+  formalArg: FuncParam,
+  actualArg: ArgValWithExpr<ad.Num>,
 ): BadArgumentTypeError => ({
   tag: "BadArgumentTypeError",
   funcName,
-  funcArg,
-  provided,
+  formalArg,
+  actualArg,
 });
 
 export const missingArgumentError = (
   funcName: string,
-  funcArg: FuncParam,
-  funcLocation: SourceRange,
+  formalArg: FuncParam,
+  callExpression: ResolvedExpr<A>,
 ): MissingArgumentError => ({
   tag: "MissingArgumentError",
   funcName,
-  funcArg,
-  funcLocation,
+  formalArg,
+  callExpression,
 });
 
 export const tooManyArgumentsError = (
-  func: CompFunc | ObjFunc | ConstrFunc,
-  funcLocation: SourceRange,
+  func: FuncSignature,
+  callExpression: ResolvedExpr<A>,
   numProvided: number,
 ): TooManyArgumentsError => ({
   tag: "TooManyArgumentsError",
   func,
-  funcLocation,
+  callExpression,
   numProvided,
 });
 
 export const functionInternalError = (
-  func: CompFunc | ObjFunc | ConstrFunc,
-  location: SourceRange,
+  func: FuncSignature,
+  callExpression: ResolvedExpr<A>,
   message: string,
 ): FunctionInternalError => ({
   tag: "FunctionInternalError",
   func,
-  location,
+  callExpression,
   message,
 });
 
@@ -1145,27 +1124,29 @@ export const redeclareNamespaceError = (
 });
 
 export const notSubstanceCollectionError = (
-  name: string,
-  location: SourceRange,
+  path: ResolvedPath<A>,
 ): NotSubstanceCollectionError => ({
   tag: "NotSubstanceCollectionError",
-  name,
-  location,
+  path,
 });
 
 export const notStyleVariableError = (
-  name: string,
-  location: SourceRange,
+  path: ResolvedPath<A>,
 ): NotStyleVariableError => ({
   tag: "NotStyleVariableError",
-  name,
-  location,
+  path,
 });
 
 export const nanError = (message: string, lastState: State): NaNError => ({
   tag: "NaNError",
   message,
   lastState,
+});
+
+export const runtimeError = (message: string): PenroseError => ({
+  tag: "RuntimeError",
+  errorType: "RuntimeError",
+  message: message,
 });
 
 // If there are multiple errors, just return the tag of the first one
@@ -1203,6 +1184,17 @@ const loc = (node: AbstractNode): string => {
   } else {
     return `generated code by the compiler`; // TODO: better description of where the node is coming from
   }
+};
+
+export const isPenroseError = (error: unknown): error is PenroseError => {
+  return (
+    error instanceof Object &&
+    "errorType" in error &&
+    (error.errorType === "DomainError" ||
+      error.errorType === "SubstanceError" ||
+      error.errorType === "StyleError" ||
+      error.errorType === "RuntimeError")
+  );
 };
 
 // #endregion

@@ -4,7 +4,9 @@
 *.substance.ts
 *.svg.ts
 *.trio.ts
+*.min.js
 /diagrams/
+/packages/bloom/docs/
 /packages/browser-ui/tsconfig.json
 /packages/components/storybook-static/
 /packages/core/docs/
@@ -15,12 +17,12 @@
 /packages/core/src/renderer/not_found.json
 /packages/docs-site/.vitepress/cache/
 /packages/docs-site/build/
+/packages/docs-site/public/bloom-docs/
+/packages/docs-set/public/bloom.min.js
 /packages/docs-site/public/try/
 /packages/docs-site/src/shapedefs.json
 /packages/examples/src/registry.ts
 /packages/examples/src/resolver.ts
-/packages/optimizer/bindings/
-/packages/optimizer/build/
 /README.md
 coverage/
 public/app.css

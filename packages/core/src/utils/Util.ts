@@ -5,18 +5,16 @@ import { LineProps } from "../shapes/Line.js";
 import { Shape, ShapeType } from "../shapes/Shapes.js";
 import * as ad from "../types/ad.js";
 import { A, ASTNode, NodeType, SourceLoc, SourceRange } from "../types/ast.js";
-import { Either, Left, Right } from "../types/common.js";
 import { StyleWarning } from "../types/errors.js";
 import { MayWarn } from "../types/functions.js";
 import { Fn } from "../types/state.js";
 import { BindingForm, Expr, Path } from "../types/style.js";
 import {
-  Context,
-  LocalVarSubst,
-  ResolvedName,
-  ResolvedPath,
-  WithContext,
-} from "../types/styleSemantics.js";
+  ResolvedExpr,
+  StylePath,
+  StylePathToUnindexedObject,
+} from "../types/stylePathResolution.js";
+import { SubstanceLiteral, SubstanceObject } from "../types/styleSemantics.js";
 import {
   ShapeT,
   TypeDesc,
@@ -39,6 +37,7 @@ import {
   MatrixV,
   NoClip,
   PathCmd,
+  PathDataListV,
   PathDataV,
   PtListV,
   ShapeListV,
@@ -79,16 +78,14 @@ export const combinations2 = <T>(list: T[]): [T, T][] =>
   }, []);
 
 /**
- * Safe wrapper for any function that might return `undefined`.
- * @borrows https://stackoverflow.com/questions/54738221/typescript-array-find-possibly-undefind
- * @param argument Possible unsafe function call
- * @param message Error message
+ * Throws if `x === undefined`.
+ * @returns `x`
+ * @param f called if `x === undefined`, to produce error message
  */
-export const safe = <T>(argument: T | undefined, message: string): T => {
-  if (argument === undefined) {
-    throw new TypeError(message);
-  }
-  return argument;
+export const unwrap = <T>(x: T | undefined, f?: () => string): T => {
+  if (x === undefined)
+    throw Error((f ?? (() => "called `unwrap` with `undefined`"))());
+  return x;
 };
 
 // Repeat `x`, `i` times
@@ -150,6 +147,34 @@ export const isKeyOf = <T extends Record<string, unknown>>(
   obj: T,
 ): key is keyof T => key in obj;
 
+/**
+ * Return a fresh topologically sorted array of nodes reachable from `sinks`.
+ * @param preds returns the predecessors of a node
+ */
+export const topsort = <T>(
+  preds: (x: T) => Iterable<T>,
+  sinks: Iterable<T>,
+): T[] => {
+  const sorted: T[] = [];
+  const marked = new Set<T>();
+  const stack: T[] = [...sinks];
+  const ready: boolean[] = stack.map(() => false);
+  while (stack.length > 0) {
+    const x = stack.pop() as T;
+    if (ready.pop()) sorted.push(x);
+    else if (!marked.has(x)) {
+      marked.add(x);
+      stack.push(x);
+      ready.push(true);
+      for (const y of preds(x)) {
+        stack.push(y);
+        ready.push(false);
+      }
+    }
+  }
+  return sorted;
+};
+
 //#endregion
 
 //#region random
@@ -180,7 +205,7 @@ export const randFloat = (
   // TODO: better error reporting
   console.assert(
     max > min,
-    "min should be smaller than max for random number generation!",
+    `min should be smaller than max for random number generation! min ${min}, max ${max}`,
   );
   return rng() * (max - min) + min;
 };
@@ -641,6 +666,13 @@ export const shapeListV = (contents: Shape<ad.Num>[]): ShapeListV<ad.Num> => ({
   contents,
 });
 
+export const pathDataListV = (
+  contents: PathCmd<ad.Num>[][],
+): PathDataListV<ad.Num> => ({
+  tag: "PathDataListV",
+  contents,
+});
+
 export const black = (): ColorV<ad.Num> =>
   colorV({ tag: "RGBA", contents: [0, 0, 0, 1] });
 export const white = (): ColorV<ad.Num> =>
@@ -716,6 +748,7 @@ export const posIntT = (): ValueT => valueT("PosInt");
 export const booleanT = (): ValueT => valueT("Boolean");
 export const realNMT = (): ValueT => valueT("RealNM");
 export const shapeListT = (): ValueT => valueT("ShapeList");
+export const pathDataListT = (): ValueT => valueT("PathDataList");
 
 export const shapeT = (type: ShapeType | "AnyShape"): ShapeT => ({
   tag: "ShapeT",
@@ -739,70 +772,124 @@ export const rectlikeT = (): UnionT =>
 
 //#region Style
 
-export const resolveRhsName = (
-  { block, subst, locals }: Context,
-  name: BindingForm<A>,
-): ResolvedName => {
-  const { value } = name.contents;
-  switch (name.tag) {
-    case "StyVar": {
-      if (locals.has(value)) {
-        // locals shadow selector match names
-        return { tag: "Local", block, name: value };
-      } else if (subst.tag === "StySubSubst" && value in subst.contents) {
-        // selector match names shadow globals
-        return { tag: "Substance", block, name: subst.contents[value] };
-      } else if (subst.tag === "CollectionSubst" && value in subst.groupby) {
-        return { tag: "Substance", block, name: subst.groupby[value] };
+export const fakePath = (name: string): StylePathToUnindexedObject<A> => {
+  return {
+    tag: "Object",
+    nodeType: "SyntheticStyle",
+    access: {
+      tag: "Member",
+      parent: {
+        tag: "Namespace",
+        nodeType: "SyntheticStyle",
+        name: "defaultNamespace",
+      },
+      name,
+    },
+  };
+};
+
+export const toLiteralUniqueName = (literal: string | number) => {
+  if (typeof literal === "string") {
+    return `{s${literal}}`;
+  } else {
+    return `{n${literal.toString()}}`;
+  }
+};
+
+export const subObjectToUniqueName = (lit: SubstanceObject) => {
+  if (lit.tag === "SubstanceVar") {
+    return lit.name;
+  } else return toLiteralUniqueName(lit.contents.contents);
+};
+
+export const uniqueNameToSubObject = (name: string): SubstanceObject => {
+  if (name.length < 3 || name[0] !== "{") {
+    return {
+      tag: "SubstanceVar",
+      name,
+    };
+  } else {
+    if (name[1] === "s") {
+      return {
+        tag: "SubstanceLiteral",
+        contents: {
+          tag: "SubstanceString",
+          contents: name.slice(2, name.length - 1),
+        },
+      };
+    } else if (name[1] === "n") {
+      return {
+        tag: "SubstanceLiteral",
+        contents: {
+          tag: "SubstanceNumber",
+          contents: Number(name.slice(2, name.length - 1)),
+        },
+      };
+    } else {
+      throw new Error("Invalid unique name");
+    }
+  }
+};
+
+export const substanceLiteralToValue = (
+  lit: SubstanceLiteral,
+): FloatV<number> | StrV => {
+  const l = lit.contents;
+
+  if (l.tag === "SubstanceNumber") {
+    return { tag: "FloatV", contents: l.contents };
+  } else {
+    return strV(l.contents);
+  }
+};
+
+export const prettyResolvedStylePath = (
+  p: StylePath<A>,
+  userFacing: boolean = false,
+): string => {
+  switch (p.tag) {
+    case "Empty":
+      return "";
+    case "Substance":
+      if (userFacing && p.styleName !== undefined) {
+        return p.styleName;
       } else {
-        // couldn't find it in context, must be a glboal
-        return { tag: "Global", block, name: value };
+        return `\`${subObjectToUniqueName(p.substanceObject)}\``;
+      }
+    case "Collection":
+      if (userFacing) {
+        return p.styleName;
+      } else {
+        return `[${p.substanceObjects
+          .map(subObjectToUniqueName)
+          .map((s) => `\`${s}\``)
+          .join(", ")}]`;
+      }
+    case "Namespace":
+      return p.name;
+    case "Unnamed":
+      if (userFacing) {
+        return "";
+      } else {
+        return `${p.blockId}:${p.substId}`;
+      }
+    case "Object": {
+      if (p.access.tag === "Member") {
+        const sParent = prettyResolvedStylePath(p.access.parent, userFacing);
+        if (sParent === "") {
+          return p.access.name;
+        } else {
+          return sParent + "." + p.access.name;
+        }
+      } else {
+        const { parent, indices } = p.access;
+        const sParent = prettyResolvedStylePath(parent, userFacing);
+        const sIndices = indices.map((i) => `[${prettyResolvedExpr(i)}]`);
+        return sParent + sIndices.join("");
       }
     }
-    case "SubVar": {
-      return { tag: "Substance", block, name: value };
-    }
   }
 };
-
-const resolveRhsPath = (p: WithContext<Path<A>>): ResolvedPath<A> => {
-  const { name, members } = p.expr; // drop `indices`
-  return { ...resolveRhsName(p.context, name), members };
-};
-
-const blockPrefix = ({ tag, contents }: LocalVarSubst): string => {
-  switch (tag) {
-    case "LocalVarId": {
-      const [i, j] = contents;
-      return `${i}:${j}:`;
-    }
-    case "NamespaceId": {
-      // locals in a global block point to globals
-      return `${contents}.`;
-    }
-  }
-};
-
-const prettyPrintResolvedName = ({
-  tag,
-  block,
-  name,
-}: ResolvedName): string => {
-  switch (tag) {
-    case "Global": {
-      return name;
-    }
-    case "Local": {
-      return `${blockPrefix(block)}${name}`;
-    }
-    case "Substance": {
-      return `\`${name}\``;
-    }
-  }
-};
-
-export const prettyPrintResolvedPath = (p: ResolvedPath<A>): string =>
-  [prettyPrintResolvedName(p), ...p.members.map((m) => m.value)].join(".");
 
 const prettyPrintBindingForm = (bf: BindingForm<A>): string => {
   switch (bf.tag) {
@@ -887,32 +974,74 @@ export const prettyPrintExpr = (
   }
 };
 
+export const prettyResolvedExpr = (e: ResolvedExpr<A>): string => {
+  switch (e.tag) {
+    case "ResolvedPath":
+      return prettyResolvedStylePath(e.contents);
+    case "Fix":
+      return String(e.contents);
+    case "CompApp": {
+      const [fnName, fnArgs] = [e.name.value, e.args];
+      return [
+        fnName,
+        "(",
+        ...fnArgs.map(prettyResolvedExpr).join(", "),
+        ")",
+      ].join("");
+    }
+    case "UOp": {
+      if (e.op === "UMinus") {
+        return `(-${prettyResolvedExpr(e.arg)})`;
+      } else {
+        return `(${prettyResolvedExpr(e.arg)}')`;
+      }
+    }
+    case "BinOp": {
+      let binOpName: string = "";
+      switch (e.op) {
+        case "BPlus":
+          binOpName = "+";
+          break;
+        case "BMinus":
+          binOpName = "-";
+          break;
+        case "Multiply":
+          binOpName = "*";
+          break;
+        case "Divide":
+          binOpName = "/";
+          break;
+        case "Exp":
+          binOpName = "**";
+          break;
+      }
+      return (
+        "(" +
+        prettyResolvedExpr(e.left) +
+        " " +
+        binOpName +
+        " " +
+        prettyResolvedExpr(e.right) +
+        ")"
+      );
+    }
+    default: {
+      const res = JSON.stringify(e);
+      return res;
+    }
+  }
+};
+
 export const prettyPrintFn = (fn: Fn): string => {
-  const body = fn.ast.expr.body;
+  const body = fn.ast.body;
   if (body.tag === "FunctionCall") {
     const name = body.name.value;
-    const args = body.args
-      .map((arg) =>
-        prettyPrintExpr(arg, (p) =>
-          prettyPrintResolvedPath(
-            resolveRhsPath({ context: fn.ast.context, expr: p }),
-          ),
-        ),
-      )
-      .join(", ");
+    const args = body.args.map((arg) => prettyResolvedExpr(arg)).join(", ");
     return [name, "(", args, ")"].join("");
   } else {
     const { op, arg1, arg2 } = body;
-    const ppArg1 = prettyPrintExpr(arg1, (p) =>
-      prettyPrintResolvedPath(
-        resolveRhsPath({ context: fn.ast.context, expr: p }),
-      ),
-    );
-    const ppArg2 = prettyPrintExpr(arg2, (p) =>
-      prettyPrintResolvedPath(
-        resolveRhsPath({ context: fn.ast.context, expr: p }),
-      ),
-    );
+    const ppArg1 = prettyResolvedExpr(arg1);
+    const ppArg2 = prettyResolvedExpr(arg2);
     return ppArg1 + " " + op.op + " " + ppArg2;
   }
 };
@@ -938,51 +1067,6 @@ export const getStart = ({ start }: LineProps<ad.Num>): ad.Num[] =>
 export const getEnd = ({ end }: LineProps<ad.Num>): ad.Num[] => end.contents;
 
 //#endregion
-
-//#region either monad
-
-export function isLeft<A, B>(val: Either<A, B>): val is Left<A> {
-  return val.tag === "Left";
-}
-
-export function isRight<A, B>(val: Either<A, B>): val is Right<B> {
-  return val.tag === "Right";
-}
-
-export function toLeft<A>(val: A): Left<A> {
-  return { contents: val, tag: "Left" };
-}
-
-export function toRight<B>(val: B): Right<B> {
-  return { contents: val, tag: "Right" };
-}
-
-export function ToLeft<A, B>(val: A): Either<A, B> {
-  return { contents: val, tag: "Left" };
-}
-
-export function ToRight<A, B>(val: B): Either<A, B> {
-  return { contents: val, tag: "Right" };
-}
-
-export function foldM<A, B, C>(
-  xs: A[],
-  f: (acc: B, curr: A, i: number) => Either<C, B>,
-  init: B,
-): Either<C, B> {
-  let res = init;
-  let resW: Either<C, B> = toRight(init); // wrapped
-
-  for (let i = 0; i < xs.length; i++) {
-    resW = f(res, xs[i], i);
-    if (resW.tag === "Left") {
-      return resW;
-    } // Stop fold early on first error and return it
-    res = resW.contents;
-  }
-
-  return resW;
-}
 
 /**
  * Gets the string value of a property.  If the property cannot be converted
@@ -1019,8 +1103,6 @@ export const getValueAsShapeList = <T>(val: Value<T>): Shape<T>[] => {
   if (val.tag === "ShapeListV") return val.contents;
   throw new Error("Not a list of shapes");
 };
-
-//#endregion
 
 //#region errors and warnings
 

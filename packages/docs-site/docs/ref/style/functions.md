@@ -1,3 +1,7 @@
+---
+anchors: functions
+---
+
 <script setup lang="ts">
 import Function from "../../../src/components/Function.vue"
 import { data } from "./functions.data.js"

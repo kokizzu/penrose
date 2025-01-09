@@ -1,5 +1,6 @@
 <script setup>
 import { VPTeamMembers } from "vitepress/theme";
+import Contributors from "../src/components/Contributors.vue"
 
 // https://commons.wikimedia.org/wiki/File:Globe_icon_2.svg
 // https://creativecommons.org/licenses/by-sa/3.0/deed.en
@@ -82,7 +83,7 @@ const members = [
   },
   {
     name: "Yiliang (Leo) Liang",
-    title: "Research engineer @ CMU",
+    title: "Ph.D. student @ CMU",
     avatar: "https://www.github.com/liangyiliang.png",
     links: [
       { icon: "github", link: "https://github.com/liangyiliang" },
@@ -99,13 +100,30 @@ const members = [
   },
   {
     name: "Hwei-Shin Harriman",
-    title: "Software engineer @ Tableau",
+    title: "Ph.D. student @ CMU",
     avatar: "https://www.github.com/hsharriman.png",
     links: [
       { icon: { svg: website }, link: "https://hsharriman.github.io/" },
       { icon: "github", link: "https://github.com/hsharriman" },
     ],
   },
+	{
+		name: "Kyle Lee",
+		title: "Undergraduate student @ CMU",
+		avatar: "https://github.com/KyleleeSea.png",
+		links:[
+      { icon: "github", link: "https://github.com/KyleleeSea" },
+		]
+	},
+	{
+		name: "Griffin Teller",
+		title: "Undergraduate student @ CMU",
+		avatar: "https://github.com/griffinteller.png",
+    links: [
+      { icon: { svg: website }, link: "https://griffinteller.com/" },
+      { icon: "github", link: "https://github.com/griffinteller" },
+    ],
+	},
   {
     name: "Rijul Jain",
     title: "REUSE student",
@@ -113,15 +131,6 @@ const members = [
     links: [
       { icon: { svg: website }, link: "https://rijuljain.com" },
       { icon: "github", link: "https://github.com/rjainrjain" },
-    ],
-  },
-  {
-    name: "Raven Rothkopf",
-    title: "REUSE student",
-    avatar: "https://www.github.com/ravenrothkopf.png",
-    links: [
-      { icon: { svg: website }, link: "https://ravenrothkopf.github.io/" },
-      { icon: "github", link: "https://github.com/ravenrothkopf" },
     ],
   },
   {
@@ -156,6 +165,7 @@ in Pittsburgh, PA USA—and other locations around the world.
 
 ## Past Members
 
+- [Raven Rothkopf](https://ravenrothkopf.github.io/)
 - [Jonathan Aldrich](https://www.cs.cmu.edu/~aldrich/)
 - [Matt Davis](https://cmumatt.github.io/)
 - [Rain Du](https://miyehn.me/)
@@ -169,3 +179,7 @@ in Pittsburgh, PA USA—and other locations around the world.
 - [Jenna Wise](https://www.cs.cmu.edu/~jlwise/)
 - [Helena Yang](https://heleaf.me/)
 - [Kai Ye](https://www.linkedin.com/in/kai-ye-83946725a/)
+
+## Contributors
+
+<Contributors />

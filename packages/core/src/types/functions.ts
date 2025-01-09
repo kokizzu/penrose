@@ -1,5 +1,5 @@
 import { Context } from "../shapes/Samplers.js";
-import * as ad from "../types/ad.js";
+import * as ad from "./ad.js";
 import { FunctionInternalWarning } from "./errors.js";
 import { ValueShapeT } from "./types.js";
 import { Value } from "./value.js";
@@ -44,3 +44,12 @@ export interface ConstrFunc {
   body: ConstrFuncBody;
   description?: string;
 }
+
+export type CompFuncSignature = Omit<CompFunc, "body">;
+export type ObjFuncSignature = Omit<ObjFunc, "body">;
+export type ConstrFuncSignature = Omit<ConstrFunc, "body">;
+
+export type FuncSignature =
+  | CompFuncSignature
+  | ObjFuncSignature
+  | ConstrFuncSignature;

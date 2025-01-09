@@ -48,6 +48,7 @@ import {
   ListV,
   MatrixV,
   PathCmd,
+  PathDataListV,
   PathDataV,
   PtListV,
   ShapeListV,
@@ -56,8 +57,8 @@ import {
   Value,
   VectorV,
 } from "../types/value.js";
-import { safe } from "../utils/Util.js";
-import { genCode, secondaryGraph } from "./Autodiff.js";
+import { unwrap } from "../utils/Util.js";
+import { compile } from "./Autodiff.js";
 
 // TODO: Is there a way to write these mapping/conversion functions with less boilerplate?
 
@@ -163,6 +164,21 @@ function mapPathData<T, S>(f: (arg: T) => S, v: PathDataV<T>): PathDataV<S> {
   };
 }
 
+function mapPathDataList<T, S>(
+  f: (arg: T) => S,
+  v: PathDataListV<T>,
+): PathDataListV<S> {
+  return {
+    tag: "PathDataListV",
+    contents: v.contents.map((cmds) => {
+      return mapPathData(f, {
+        tag: "PathDataV",
+        contents: cmds,
+      }).contents;
+    }),
+  };
+}
+
 function mapColorInner<T, S>(f: (arg: T) => S, v: Color<T>): Color<S> {
   switch (v.tag) {
     case "RGBA":
@@ -181,7 +197,7 @@ function mapColor<T, S>(f: (arg: T) => S, v: ColorV<T>): ColorV<S> {
   };
 }
 
-function mapShape<T, S>(f: (arg: T) => S, v: Shape<T>): Shape<S> {
+export function mapShape<T, S>(f: (arg: T) => S, v: Shape<T>): Shape<S> {
   switch (v.shapeType) {
     case "Circle":
       return mapCircle(f, v);
@@ -481,6 +497,8 @@ export function mapValueNumeric<T, S>(f: (arg: T) => S, v: Value<T>): Value<S> {
       return mapPathData(f, v);
     case "ShapeListV":
       return mapShapeList(f, v);
+    case "PathDataListV":
+      return mapPathDataList(f, v);
     case "ClipDataV":
       return mapClipData(f, v);
     // non-numeric Value types
@@ -504,22 +522,14 @@ export const compileCompGraph = async (
       vars.push(x);
     }, s);
   }
-  const compGraph: ad.Graph = secondaryGraph(vars);
-  const evalFn = await genCode(compGraph);
+  const m = new Map(vars.map((x, i) => [x, i]));
+  const evalFn = await compile(vars);
   return (xs: number[]): Shape<number>[] => {
     const numbers = evalFn(
-      (x) => xs[safe(indices.get(x), "input not found")],
-    ).secondary;
-    const m = new Map(compGraph.secondary.map((id, i) => [id, numbers[i]]));
+      (x) => xs[unwrap(indices.get(x), () => "input not found")],
+    );
     return shapes.map((s: Shape<ad.Num>) =>
-      mapShape(
-        (x) =>
-          safe(
-            m.get(safe(compGraph.nodes.get(x), `missing node`)),
-            "missing output",
-          ),
-        s,
-      ),
+      mapShape((x) => numbers[unwrap(m.get(x), () => "missing output")], s),
     );
   };
 };

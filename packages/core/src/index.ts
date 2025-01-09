@@ -1,17 +1,17 @@
-import { start, stepUntil } from "@penrose/optimizer";
 import seedrandom from "seedrandom";
 import { compileDomain } from "./compiler/Domain.js";
 import { compileStyle } from "./compiler/Style.js";
 import { compileSubstance } from "./compiler/Substance.js";
-import { PathResolver, toInteractiveSVG, toSVG } from "./renderer/Renderer.js";
+import { start, stepUntil } from "./engine/Optimizer.js";
+import { PathResolver, toSVG } from "./renderer/Renderer.js";
 import * as ad from "./types/ad.js";
-import { Env } from "./types/domain.js";
+import { DomainEnv } from "./types/domain.js";
 import { PenroseError } from "./types/errors.js";
 import { Fn, LabelCache, State } from "./types/state.js";
 import { SubstanceEnv } from "./types/substance.js";
 import {
   collectLabels,
-  insertPending,
+  insertLabelMeasurements,
   mathjaxInit,
 } from "./utils/CollectLabels.js";
 import {
@@ -22,7 +22,7 @@ import {
   ok,
   showError,
 } from "./utils/Error.js";
-import { safe } from "./utils/Util.js";
+import { unwrap } from "./utils/Util.js";
 
 /**
  * Use the current resample seed to sample all shapes in the State.
@@ -30,11 +30,13 @@ import { safe } from "./utils/Util.js";
  */
 export const resample = (state: State): State => {
   const rng = seedrandom(state.variation);
-  return insertPending({
+  return insertLabelMeasurements({
     ...state,
+    // resample all sampled inputs
     varyingValues: state.inputs.map(({ meta }) =>
       meta.init.tag === "Sampled" ? meta.init.sampler(rng) : meta.init.pending,
     ),
+    // restart from the first stage
     currentStageIndex: 0,
     params: start(state.varyingValues.length),
   });
@@ -53,7 +55,10 @@ export const step = (
 ): Result<State, PenroseError> => {
   const { constraintSets, optStages, currentStageIndex } = state;
   const stage = optStages[currentStageIndex];
-  const masks = safe(constraintSets.get(stage), "missing stage");
+  const masks = unwrap(
+    constraintSets.get(stage),
+    () => `missing stage: ${stage}`,
+  );
   const xs = new Float64Array(state.varyingValues);
   const params = stepUntil(
     (x: Float64Array, weight: number, grad: Float64Array): number =>
@@ -194,54 +199,6 @@ export const diagram = async (
 };
 
 /**
- * Embed an interactive Penrose diagram in a DOM node.
- *
- * @param prog a Penrose trio and variation
- * @param pathResolver a resolver function for fetching Style imports
- * @param node a node in the DOM tree
- * @param name the name of the diagram
- */
-export const interactiveDiagram = async (
-  prog: {
-    substance: string;
-    style: string;
-    domain: string;
-    variation: string;
-    excludeWarnings: string[];
-  },
-  node: HTMLElement,
-  pathResolver: PathResolver,
-  name?: string,
-): Promise<void> => {
-  const updateData = async (state: State) => {
-    const stepped = optimizeOrThrow(state);
-    const rendering = await toInteractiveSVG(
-      stepped,
-      updateData,
-      pathResolver,
-      name ?? "",
-    );
-    node.replaceChild(rendering, node.firstChild!);
-  };
-  const res = await compile(prog);
-  if (res.isOk()) {
-    const state: State = res.value;
-    const optimized = optimizeOrThrow(state);
-    const rendering = await toInteractiveSVG(
-      optimized,
-      updateData,
-      pathResolver,
-      name ?? "",
-    );
-    node.appendChild(rendering);
-  } else {
-    throw Error(
-      `Error when generating Penrose diagram: ${showError(res.error)}`,
-    );
-  }
-};
-
-/**
  * Given a trio of Domain, Substance, and Style programs, compile them into an initial `State`.
  * @param domainProg a Domain program string
  * @param subProg a Substance program string
@@ -254,21 +211,28 @@ export const compile = async (prog: {
   variation: string;
   excludeWarnings?: string[];
 }): Promise<Result<State, PenroseError>> => {
-  const domainRes: Result<Env, PenroseError> = compileDomain(prog.domain);
+  const domRes: Result<DomainEnv, PenroseError> = compileDomain(prog.domain);
 
-  const subRes: Result<[SubstanceEnv, Env], PenroseError> = andThen(
-    (env) => compileSubstance(prog.substance, env),
-    domainRes,
+  if (domRes.isErr()) {
+    return err(domRes.error);
+  }
+
+  const subRes: Result<SubstanceEnv, PenroseError> = compileSubstance(
+    prog.substance,
+    domRes.value,
   );
 
-  const styRes: Result<State, PenroseError> = subRes.isErr()
-    ? err(subRes.error)
-    : await compileStyle(
-        prog.variation,
-        prog.style,
-        prog.excludeWarnings ?? [],
-        ...subRes.value,
-      );
+  if (subRes.isErr()) {
+    return err(subRes.error);
+  }
+
+  const styRes: Result<State, PenroseError> = await compileStyle(
+    prog.variation,
+    prog.style,
+    prog.excludeWarnings ?? [],
+    subRes.value,
+    domRes.value,
+  );
 
   if (styRes.isErr()) {
     return styRes;
@@ -284,7 +248,41 @@ export const compile = async (prog: {
     if (labelCache.isErr()) {
       return err(labelCache.error);
     }
-    return ok(insertPending({ ...state, labelCache: labelCache.value }));
+    return ok(
+      insertLabelMeasurements({ ...state, labelCache: labelCache.value }),
+    );
+  }
+};
+
+export const compileTrio = async (prog: {
+  substance: string;
+  style: string;
+  domain: string;
+  variation: string;
+  excludeWarnings?: string[];
+}): Promise<Result<State, PenroseError>> => {
+  const domainRes: Result<DomainEnv, PenroseError> = compileDomain(prog.domain);
+  if (domainRes.isOk()) {
+    const subRes: Result<SubstanceEnv, PenroseError> = andThen(
+      (env) => compileSubstance(prog.substance, env),
+      domainRes,
+    );
+
+    if (subRes.isOk()) {
+      const styRes: Result<State, PenroseError> = await compileStyle(
+        prog.variation,
+        prog.style,
+        prog.excludeWarnings ?? [],
+        subRes.value,
+        domainRes.value,
+      );
+
+      return styRes;
+    } else {
+      return err(subRes.error);
+    }
+  } else {
+    return err(domainRes.error);
   }
 };
 
@@ -309,17 +307,13 @@ export const isError = (state: State): boolean =>
 export const finalStage = (state: State): boolean =>
   state.currentStageIndex === state.optStages.length - 1;
 
-/**
- * Returns true if state is the initial frame
- * @param state current state
- */
-export const isInitial = (state: State): boolean =>
-  state.params.optStatus === "NewIter";
-
 const evalGrad = (s: State): ad.OptOutputs => {
   const { constraintSets, optStages, currentStageIndex } = s;
   const stage = optStages[currentStageIndex];
-  const masks = safe(constraintSets.get(stage), "missing stage");
+  const masks = unwrap(
+    constraintSets.get(stage),
+    () => `missing stage: ${stage}`,
+  );
   const x = new Float64Array(s.varyingValues);
   // we constructed `x` to throw away, so it's OK to update it in-place with the
   // gradient after computing the energy
@@ -356,6 +350,7 @@ export type PenroseFn = Fn;
 
 export * from "./api.js";
 export { checkDomain, compileDomain, parseDomain } from "./compiler/Domain.js";
+export { computeLayerOrdering } from "./compiler/Style.js";
 export {
   checkSubstance,
   compileSubstance,
@@ -363,32 +358,80 @@ export {
   prettyCompiledSubstance,
   prettySubstance,
 } from "./compiler/Substance.js";
-export { constrDict } from "./contrib/Constraints.js";
-export { compDict } from "./contrib/Functions.js";
-export { objDict } from "./contrib/Objectives.js";
-export { toInteractiveSVG, toSVG } from "./renderer/Renderer.js";
+export { genGradient } from "./engine/Autodiff.js";
+export {
+  compileCompGraph,
+  mapShape,
+  mapValueNumeric,
+} from "./engine/EngineUtils.js";
+export { start } from "./engine/Optimizer.js";
+export { constrDict } from "./lib/Constraints.js";
+export { compDict } from "./lib/Functions.js";
+export { objDict } from "./lib/Objectives.js";
+export { RenderShapes, toSVG } from "./renderer/Renderer.js";
 export type { PathResolver } from "./renderer/Renderer.js";
-export { makeCanvas, simpleContext } from "./shapes/Samplers.js";
-export type { Canvas } from "./shapes/Samplers.js";
+export type { Circle } from "./shapes/Circle.js";
+export type { Ellipse } from "./shapes/Ellipse.js";
+export type { Equation } from "./shapes/Equation.js";
+export type { Group } from "./shapes/Group.js";
+export type { Image } from "./shapes/Image.js";
+export type { Line } from "./shapes/Line.js";
+export type { Path } from "./shapes/Path.js";
+export type { Polygon } from "./shapes/Polygon.js";
+export type { Rectangle } from "./shapes/Rectangle.js";
+export { makeCanvas, simpleContext, uniform } from "./shapes/Samplers.js";
+export type { Canvas, InputMeta } from "./shapes/Samplers.js";
 export { sampleShape, shapeTypes } from "./shapes/Shapes.js";
-export type { ShapeType } from "./shapes/Shapes.js";
-export type { Env } from "./types/domain.js";
+export type { Shape, ShapeType } from "./shapes/Shapes.js";
+export type { Text } from "./shapes/Text.js";
+export { isVar } from "./types/ad.js";
+export type { DomainEnv } from "./types/domain.js";
 export type {
+  DomainError,
   PenroseError,
   Warning as PenroseWarning,
+  StyleError,
+  SubstanceError,
 } from "./types/errors.js";
 export type { CompFunc } from "./types/functions.js";
+export * from "./types/state.js";
 export type { SubProg } from "./types/substance.js";
+export { valueTypeDesc } from "./types/types.js";
 export * as Value from "./types/value.js";
-export { errLocs, showError } from "./utils/Error.js";
+export {
+  collectLabels,
+  insertLabelMeasurements as insertPending,
+  mathjaxInit,
+} from "./utils/CollectLabels.js";
+export {
+  err,
+  errLocs,
+  isPenroseError,
+  ok,
+  runtimeError,
+  showError,
+} from "./utils/Error.js";
 export type { Result } from "./utils/Error.js";
+export { default as Graph } from "./utils/Graph.js";
+export { buildRenderGraph, makeGroupGraph } from "./utils/GroupGraph.js";
+export * from "./utils/InteractionUtils.js";
 export {
   allWarnings,
+  boolV,
+  clipDataV,
+  colorV,
   describeType,
+  floatV,
   hexToRgba,
+  isKeyOf,
+  pathDataV,
   prettyPrintExpr,
   prettyPrintFn,
   prettyPrintPath,
+  ptListV,
   rgbaToHex,
+  shapeListV,
+  strV,
+  vectorV,
   zip2,
 } from "./utils/Util.js";

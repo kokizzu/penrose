@@ -9,8 +9,8 @@ import {
   SourceLoc,
   SourceRange,
 } from "./ast.js";
-import { Arg, TypeConstructor, TypeVar } from "./domain.js";
-import { CompFunc, ConstrFunc, FuncParam, ObjFunc } from "./functions.js";
+import { Arg, Type } from "./domain.js";
+import { FuncParam, FuncSignature } from "./functions.js";
 import { State } from "./state.js";
 import {
   BinOp,
@@ -22,9 +22,20 @@ import {
   Path,
   UOp,
 } from "./style.js";
-import { ResolvedPath } from "./styleSemantics.js";
-import { Deconstructor, StmtSet, SubExpr, TypeConsApp } from "./substance.js";
-import { ArgValWithSourceLoc, ShapeVal, Val, Value } from "./value.js";
+import {
+  Resolved,
+  ResolvedExpr,
+  ResolvedPath,
+  ResolvedStylePath,
+  ResolvedUnindexedStylePath,
+  StylePath,
+  StylePathToCollection,
+  StylePathToNamespaceScope,
+  StylePathToSubstanceScope,
+  StylePathToUnindexedObject,
+} from "./stylePathResolution.js";
+import { StmtSet, SubExpr, TypeApp } from "./substance.js";
+import { ArgValWithExpr, ShapeVal, Val, Value } from "./value.js";
 
 //#region ErrorTypes
 
@@ -53,29 +64,28 @@ export type SubstanceError =
   | ParseError
   | DuplicateName
   | TypeNotFound
-  | TypeVarNotFound
   | TypeMismatch
   | ArgLengthMismatch
-  | TypeArgLengthMismatch
   | VarNotFound
-  | DeconstructNonconstructor
-  | UnexpectedExprForNestedPred
   | InvalidSetIndexingError
+  | BadSetIndexRangeError
   | DuplicateIndexError
   | DivideByZeroError
   | InvalidArithmeticValueError
   | UnsupportedIndexingError
+  | DeclLiteralError
   | FatalError; // TODO: resolve all fatal errors in the Substance module
 
 export type DomainError =
   | ParseError
   | TypeDeclared
-  | TypeVarNotFound
   | TypeNotFound
   | DuplicateName
   | CyclicSubtypes
   | SymmetricTypeMismatch
-  | SymmetricArgLengthMismatch;
+  | SymmetricArgLengthMismatch
+  | OutputLiteralTypeError
+  | SubOrSuperLiteralTypeError;
 
 export interface SymmetricTypeMismatch {
   tag: "SymmetricTypeMismatch";
@@ -87,11 +97,29 @@ export interface SymmetricArgLengthMismatch {
   sourceExpr: AbstractNode;
 }
 
+export interface OutputLiteralTypeError {
+  tag: "OutputLiteralTypeError";
+  type: Type<A>;
+  location: AbstractNode;
+}
+
+export interface SubOrSuperLiteralTypeError {
+  tag: "SubOrSuperLiteralTypeError";
+  type: Type<A>;
+  location: AbstractNode;
+}
+
 export interface InvalidSetIndexingError {
   tag: "InvalidSetIndexingError";
   index: string;
   location: AbstractNode;
   suggestions: string[];
+}
+
+export interface BadSetIndexRangeError {
+  tag: "BadSetIndexRangeError";
+  index: number;
+  location: AbstractNode;
 }
 
 export interface DuplicateIndexError {
@@ -116,11 +144,10 @@ export interface UnsupportedIndexingError {
   iset: StmtSet<A>;
 }
 
-export interface UnexpectedExprForNestedPred {
-  tag: "UnexpectedExprForNestedPred";
-  sourceType: TypeConstructor<A>;
-  sourceExpr: AbstractNode;
-  expectedExpr: AbstractNode;
+export interface DeclLiteralError {
+  tag: "DeclLiteralError";
+  location: AbstractNode;
+  type: TypeApp<A>;
 }
 
 export interface CyclicSubtypes {
@@ -131,16 +158,13 @@ export interface CyclicSubtypes {
 export interface TypeDeclared {
   tag: "TypeDeclared";
   typeName: Identifier<A>;
+  firstDefined: AbstractNode;
 }
 export interface DuplicateName {
   tag: "DuplicateName";
   name: Identifier<A>;
   location: AbstractNode;
   firstDefined: AbstractNode;
-}
-export interface TypeVarNotFound {
-  tag: "TypeVarNotFound";
-  typeVar: TypeVar<A>;
 }
 export interface TypeNotFound {
   tag: "TypeNotFound";
@@ -155,8 +179,8 @@ export interface VarNotFound {
 
 export interface TypeMismatch {
   tag: "TypeMismatch";
-  sourceType: TypeConstructor<A>;
-  expectedType: TypeConstructor<A>;
+  sourceType: TypeApp<A>;
+  expectedType: Type<A>;
   sourceExpr: AbstractNode;
   expectedExpr: AbstractNode;
 }
@@ -168,20 +192,6 @@ export interface ArgLengthMismatch {
   sourceExpr: AbstractNode;
   expectedExpr: AbstractNode;
 }
-
-export interface TypeArgLengthMismatch {
-  tag: "TypeArgLengthMismatch";
-  sourceType: TypeConstructor<A>;
-  expectedType: TypeConstructor<A>;
-  sourceExpr: AbstractNode;
-  expectedExpr: AbstractNode;
-}
-
-export interface DeconstructNonconstructor {
-  tag: "DeconstructNonconstructor";
-  deconstructor: Deconstructor<A>;
-}
-
 export interface MultipleLayoutError {
   tag: "MultipleLayoutError";
   decls: LayoutStages<C>[];
@@ -208,8 +218,6 @@ export type StyleError =
   | InvalidColorLiteral
   // Selector errors (from Substance)
   | SelectorVarMultipleDecl
-  | SelectorDeclTypeMismatch
-  | SelectorRelTypeMismatch
   | SelectorFieldNotSupported
   | TaggedSubstanceError
   | SelectorAliasNamingError
@@ -225,6 +233,7 @@ export type StyleError =
   | AssignSubstanceError
   | BadElementError
   | BadIndexError
+  | UnindexableItemError
   | BinOpTypeError
   | CanvasNonexistentDimsError
   | CyclicAssignmentError
@@ -232,14 +241,16 @@ export type StyleError =
   | DeleteSubstanceError
   | MultipleLayoutError
   | MissingPathError
+  | UndeclaredSubVarError
+  | PathToCollectionError
+  | PathToNamespaceError
+  | PathToSubstanceError
+  | CollectionMemberAccessError
   | MissingShapeError
   | NestedShapeError
-  | NotCollError
-  | IndexIntoShapeListError
   | NotShapeError
   | NotValueError
   | OutOfBoundsError
-  | PropertyMemberError
   | UOpTypeError
   | BadShapeParamTypeError
   | BadArgumentTypeError
@@ -250,6 +261,7 @@ export type StyleError =
   | NotSubstanceCollectionError
   | NotStyleVariableError
   | LayerOnNonShapesError
+  | NonWellFormedPathError
   // Runtime errors
   | RuntimeValueTypeError;
 
@@ -273,12 +285,12 @@ export interface StyleDiagnostics {
 
 export interface ImplicitOverrideWarning {
   tag: "ImplicitOverrideWarning";
-  path: ResolvedPath<C>;
+  path: ResolvedUnindexedStylePath<A>;
 }
 
 export interface NoopDeleteWarning {
   tag: "NoopDeleteWarning";
-  path: ResolvedPath<C>;
+  path: ResolvedUnindexedStylePath<A>;
 }
 export interface LayerCycleWarning {
   tag: "LayerCycleWarning";
@@ -303,7 +315,7 @@ export interface BBoxApproximationWarning {
 
 export interface BBoxApproximationWarningItem {
   signature: string;
-  location?: SourceRange;
+  callExpression?: ResolvedExpr<A>;
 }
 
 //#endregion
@@ -327,7 +339,7 @@ export interface ParseError {
 
 export interface InvalidColorLiteral {
   tag: "InvalidColorLiteral";
-  color: ColorLit<C>;
+  color: ColorLit<A>;
 }
 
 export interface SelectorVarMultipleDecl {
@@ -335,17 +347,11 @@ export interface SelectorVarMultipleDecl {
   varName: BindingForm<A>;
 }
 
-export interface SelectorDeclTypeMismatch {
-  tag: "SelectorDeclTypeMismatch";
-  subType: TypeConsApp<A>;
-  styType: TypeConsApp<A>;
-}
-
-export interface SelectorRelTypeMismatch {
-  tag: "SelectorRelTypeMismatch";
-  varType: TypeConsApp<A>;
-  exprType: TypeConsApp<A>;
-}
+// export interface SelectorRelTypeMismatch {
+//   tag: "SelectorRelTypeMismatch";
+//   varType: TypeConsApp<A>;
+//   exprType: TypeConsApp<A>;
+// }
 
 export interface SelectorFieldNotSupported {
   tag: "SelectorFieldNotSupported";
@@ -401,33 +407,38 @@ export interface InvalidConstraintNameError {
 
 export interface AssignAccessError {
   tag: "AssignAccessError";
-  path: Path<C>;
+  path: ResolvedStylePath<A>;
 }
 
 export interface AssignGlobalError {
   tag: "AssignGlobalError";
-  path: ResolvedPath<C>;
+  path: StylePathToNamespaceScope<A>;
 }
 
 export interface AssignSubstanceError {
   tag: "AssignSubstanceError";
-  path: ResolvedPath<C>;
+  path: StylePathToSubstanceScope<A> | StylePathToCollection<A>;
 }
 
 export interface BadElementError {
   tag: "BadElementError";
-  coll: Expr<C>;
+  coll: ResolvedExpr<A>;
   index: number;
 }
 
 export interface BadIndexError {
   tag: "BadIndexError";
-  expr: Expr<C>;
+  expr: ResolvedExpr<A>;
+}
+
+export interface UnindexableItemError {
+  tag: "UnindexableItemError";
+  expr: ResolvedUnindexedStylePath<A>;
 }
 
 export interface BinOpTypeError {
   tag: "BinOpTypeError";
-  expr: BinOp<C>;
+  expr: Resolved<BinOp<A>>;
   left: Value<ad.Num>["tag"];
   right: Value<ad.Num>["tag"];
 }
@@ -447,71 +458,82 @@ export interface CyclicAssignmentError {
 
 export interface DeleteGlobalError {
   tag: "DeleteGlobalError";
-  path: ResolvedPath<C>;
+  path: StylePath<A>;
 }
 
 export interface DeleteSubstanceError {
   tag: "DeleteSubstanceError";
-  path: ResolvedPath<C>;
+  path: StylePath<A>;
 }
 
 export interface MissingPathError {
   tag: "MissingPathError";
-  path: ResolvedPath<C>;
+  path: StylePath<A>;
+}
+
+export interface UndeclaredSubVarError {
+  tag: "UndeclaredSubVarError";
+  name: Identifier<A>;
+}
+
+export interface PathToCollectionError {
+  tag: "PathToCollectionError";
+  path: StylePathToCollection<A>;
+}
+
+export interface PathToSubstanceError {
+  tag: "PathToSubstanceError";
+  path: StylePathToSubstanceScope<A>;
+}
+
+export interface PathToNamespaceError {
+  tag: "PathToNamespaceError";
+  path: StylePathToNamespaceScope<A>;
+}
+
+export interface CollectionMemberAccessError {
+  tag: "CollectionMemberAccessError";
+  path: StylePathToCollection<A>;
+  field: string;
 }
 
 export interface MissingShapeError {
   tag: "MissingShapeError";
-  path: ResolvedPath<C>;
+  path: StylePath<A>;
 }
 
 export interface NestedShapeError {
   tag: "NestedShapeError";
-  expr: GPIDecl<C>;
-}
-
-export interface NotCollError {
-  tag: "NotCollError";
-  expr: Expr<C>;
-}
-
-export interface IndexIntoShapeListError {
-  tag: "IndexIntoShapeListError";
-  expr: Expr<C>;
+  expr: Resolved<GPIDecl<A>>;
 }
 
 export interface NotShapeError {
   tag: "NotShapeError";
-  path: ResolvedPath<C>;
+  path: StylePathToUnindexedObject<A>;
   what: string;
 }
 
 export interface NotValueError {
   tag: "NotValueError";
-  expr: Expr<C>;
+  expr: ResolvedExpr<A>;
   what?: string;
 }
 
 export interface OutOfBoundsError {
   tag: "OutOfBoundsError";
-  expr: Path<C>;
+  expr: ResolvedPath<A>;
   indices: number[];
-}
-
-export interface PropertyMemberError {
-  tag: "PropertyMemberError";
-  path: ResolvedPath<C>;
 }
 
 export interface UOpTypeError {
   tag: "UOpTypeError";
-  expr: UOp<C>;
+  expr: Resolved<UOp<A>>;
   arg: Value<ad.Num>["tag"];
 }
 
 export interface BadShapeParamTypeError {
   tag: "BadShapeParamTypeError";
-  path: string;
+  path: StylePathToUnindexedObject<A>;
   value: Val<ad.Num> | ShapeVal<ad.Num>;
   expectedType: string;
   passthrough: boolean;
@@ -520,28 +542,29 @@ export interface BadShapeParamTypeError {
 export interface BadArgumentTypeError {
   tag: "BadArgumentTypeError";
   funcName: string;
-  funcArg: FuncParam;
-  provided: ArgValWithSourceLoc<ad.Num>;
+  formalArg: FuncParam;
+  actualArg: ArgValWithExpr<ad.Num>;
 }
 
 export interface MissingArgumentError {
   tag: "MissingArgumentError";
   funcName: string;
-  funcArg: FuncParam;
-  funcLocation: SourceRange;
+  formalArg: FuncParam;
+  callExpression: ResolvedExpr<A>;
 }
 
 export interface TooManyArgumentsError {
   tag: "TooManyArgumentsError";
-  func: CompFunc | ObjFunc | ConstrFunc;
-  funcLocation: SourceRange;
+  func: FuncSignature;
+  callExpression: ResolvedExpr<A>;
   numProvided: number;
 }
 
 export interface FunctionInternalError {
   tag: "FunctionInternalError";
-  func: CompFunc | ObjFunc | ConstrFunc;
-  location: SourceRange;
+  // NOTE: to be compatible with webworkers, the function body cannot be cloned and can be therefore excluded.
+  func: FuncSignature;
+  callExpression: ResolvedExpr<A>;
   message: string;
 }
 
@@ -553,20 +576,22 @@ export interface RedeclareNamespaceError {
 
 export interface NotSubstanceCollectionError {
   tag: "NotSubstanceCollectionError";
-  name: string;
-  location: SourceRange;
+  path: ResolvedPath<A>;
 }
 
 export interface NotStyleVariableError {
   tag: "NotStyleVariableError";
-  name: string;
-  location: SourceRange;
+  path: ResolvedPath<A>;
 }
 
 export interface LayerOnNonShapesError {
   tag: "LayerOnNonShapesError";
-  location: SourceRange;
-  expr: string;
+  path: ResolvedPath<A>;
+}
+
+export interface NonWellFormedPathError {
+  tag: "NonWellFormedPathError";
+  path: ResolvedUnindexedStylePath<A>;
 }
 
 //#endregion

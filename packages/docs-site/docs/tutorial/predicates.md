@@ -2,7 +2,7 @@
 
 In Penrose, we are not only given the power to represent mathematical objects with shapes, but we are also able to represent complicated relationships between the objects. In this tutorial, we will learn about defining **predicates**, and visually representing them with the constraint keyword `ensure`. After this tutorial, you should be equipped to create diagrams with relationships between objects in Penrose.
 
-👉 [**Open this online workspace**](pathname:///try/index.html?examples=tutorials%2Ftutorial2) in a separate tab to follow along!
+👉 <a href="/try/index.html?examples=tutorials%2Ftutorial2" target="_blank">**Open this online workspace**</a> in a separate tab to follow along!
 
 ## Goal
 
@@ -30,14 +30,14 @@ predicate IsR(t1 var1, t2 var2)
 
 This pattern informs Penrose that there is a relationship that we care about called `IsR` which takes arguments of type `t1` and `t2`. Penrose still doesn't know how to visually represent this relationship, so we will have to define that logic in our `.style` file a little later.
 
-In the case of our current example, we can name our relationship `IsSubset`, and we have 2 arguments of type `Set`.
+In the case of our current example, we can name our relationship `Subset`, and we have 2 arguments of type `Set`.
 
 ```domain
 type Set
-predicate IsSubset(Set s1, Set s2)
+predicate Subset(Set s1, Set s2)
 ```
 
-Now we are free to use the predicate `IsSubset` in our `.substance` file and define what it means visually in our `.style` file.
+Now we are free to use the predicate `Subset` in our `.substance` file and define what it means visually in our `.style` file.
 
 ## 📄 Substance
 
@@ -53,8 +53,8 @@ So, we declare the set objects that will appear in our diagram, then we declare 
 
 ```substance
 Set A, B, C
-IsSubset(B, A)
-IsSubset(C, B)
+Subset(B, A)
+Subset(C, B)
 ```
 
 ## 📄 Style
@@ -67,13 +67,13 @@ Recall that we learned about predicates that are defined in `.domain` and used i
 - A's circle needs to be contained within B's circle (their borders should not be intersecting in any way)
 - A's circle is on top of B's circle
 
-Therefore we call the corresponding `ensure` functions on the `.icon` fields (that we used to assign shape objects to in tutorial 1) of two arbitrary sets that have the relationship of `IsSubset`.
+Therefore we call the corresponding `ensure` functions on the `.icon` fields (that we used to assign shape objects to in tutorial 1) of two arbitrary sets that have the relationship of `Subset`.
 
-Now our selector is not just `forall Set A` since we only want to apply these styling rules to the sets that have the relationship `isSubset`. Therefore, we need to add a condition to the arbitrary sets we are looping through in the program. We can do this with the pattern `where HasRelationshipR(A, B)` where the `HasRelationshipR` is `IsSubset` in this particular case. Now our `.style` file looks like this:
+Now our selector is not just `forall Set A` since we only want to apply these styling rules to the sets that have the relationship `Subset`. Therefore, we need to add a condition to the arbitrary sets we are looping through in the program. We can do this with the pattern `where HasRelationshipR(A, B)` where the `HasRelationshipR` is `Subset` in this particular case. Now our `.style` file looks like this:
 
 ```style
 forall Set A; Set B
-where IsSubset(A, B) {
+where Subset(A, B) {
     ensure contains(A.icon, B.icon, 5.0)
     A.icon above B.icon
 }
@@ -100,7 +100,7 @@ So putting it all together, we have:
 
 ```style
 forall Set A; Set B
-where IsSubset(A, B) {
+where Subset(A, B) {
     ensure contains(A.icon, B.icon, 5.0)
     A.icon above B.icon
 }

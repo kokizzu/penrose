@@ -7,12 +7,21 @@ import topLevelAwait from "vite-plugin-top-level-await";
 export default defineConfig({
   base: "/try/",
   plugins: [react({ jsxRuntime: "classic" }), topLevelAwait()],
+  worker: {
+    format: "es",
+    plugins: () => [topLevelAwait()],
+  },
   build: { target: "esnext" },
   optimizeDeps: {
-    exclude: ["@penrose/examples"],
+    esbuildOptions: { target: "esnext" },
+    exclude: ["@penrose/examples", "rose"],
   },
   server: {
     port: 3000,
+    headers: { "Cross-Origin-Opener-Policy": "same-origin-allow-popups" },
+  },
+  preview: {
+    headers: { "Cross-Origin-Opener-Policy": "same-origin-allow-popups" },
   },
   resolve: {
     preserveSymlinks: true,

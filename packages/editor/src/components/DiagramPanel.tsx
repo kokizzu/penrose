@@ -1,320 +1,81 @@
-import {
-  PenroseState,
-  isOptimized,
-  showError,
-  stepTimes,
-  toInteractiveSVG,
-  toSVG,
-} from "@penrose/core";
-import localforage from "localforage";
+import { isPenroseError, runtimeError, showError } from "@penrose/core";
 import { useEffect, useRef, useState } from "react";
-import toast from "react-hot-toast";
-import { useRecoilCallback, useRecoilState, useRecoilValue } from "recoil";
-import { optimize } from "svgo";
-import { v4 as uuid } from "uuid";
+import { useMediaQuery } from "react-responsive";
+import { useRecoilState, useRecoilValue, useRecoilValueLoadable } from "recoil";
+import styled from "styled-components";
+import {
+  DiagramID,
+  StepSequenceID,
+  isErr,
+  showOptimizerError,
+} from "../optimizer/common.js";
 import {
   Diagram,
-  DiagramMetadata,
-  ProgramFile,
-  RogerState,
-  WorkspaceMetadata,
+  canvasState,
   currentRogerState,
-  diagramMetadataSelector,
   diagramState,
-  fileContentsSelector,
+  diagramWorkerState,
+  layoutTimelineState,
+  optimizer,
+  settingsState,
   workspaceMetadataSelector,
 } from "../state/atoms.js";
+import { useCompileDiagram, useResampleDiagram } from "../state/callbacks.js";
+import { pathResolver } from "../utils/downloadUtils.js";
+import {
+  renderPlayModeInteractivity,
+  stateToSVG,
+} from "../utils/renderUtils.js";
 import BlueButton from "./BlueButton.js";
+import InteractivityOverlay from "./InteractivityOverlay.js";
+import { LayoutTimelineSlider } from "./LayoutTimelineSlider.js";
 
-/**
- * Fetch url, but try local storage first using a name.
- * Update local storage if the file is fetched via url
- *
- * @param name The short name of the file to fetch
- * @param url The url to fetch, if not found locally
- * @returns Promise that resolves to the fetched string or undefined if the fetch failed
- */
-const fetchResource = async (
-  name: string,
-  { id }: WorkspaceMetadata,
-  url?: string,
-): Promise<string | undefined> => {
-  const localFilePrefix = "localfile://" + id + "/";
-  try {
-    // Attempt to retrieve the resource from local storage
-    const localImage = await localforage.getItem<string>(
-      localFilePrefix + name,
-    );
-    if (localImage) {
-      return localImage;
-    } else {
-      // Return undefined if there is no url and not hit in local storage
-      if (!url) return undefined;
-
-      // Try to fetch it by url
-      const httpResource = await fetch(url);
-      // Update local storage and return the resource
-      if (httpResource.ok) {
-        const httpBody = httpResource.text();
-        localforage.setItem(localFilePrefix + name, httpBody);
-        return httpBody;
-      } else {
-        console.log(`HTTP status ${httpResource.status} for ${url}`);
-        return undefined;
-      }
-    }
-  } catch (e) {
-    console.log(`Error fetching resource. Local name: ${name}, url: ${url}`);
-    return undefined;
-  }
-};
-
-export const pathResolver = async (
-  relativePath: string,
-  rogerState: RogerState,
-  workspace: WorkspaceMetadata,
-): Promise<string | undefined> => {
-  const { location } = workspace;
-
-  // Handle absolute URLs
-  if (/^(http|https):\/\/[^ "]+$/.test(relativePath)) {
-    const url = new URL(relativePath).href;
-    return fetchResource(url, workspace, url);
-  }
-
-  // Handle relative paths
-  switch (location.kind) {
-    case "example": {
-      return location.resolver(relativePath);
-    }
-    case "roger": {
-      if (rogerState.kind === "connected") {
-        const { ws } = rogerState;
-        return new Promise((resolve /*, reject*/) => {
-          const token = uuid();
-          ws.addEventListener("message", (e) => {
-            const parsed = JSON.parse(e.data);
-            if (parsed.kind === "file_change" && parsed.token === token) {
-              return resolve(parsed.contents);
-            }
-          });
-          ws.send(
-            JSON.stringify({
-              kind: "retrieve_file_from_style",
-              relativePath,
-              stylePath: location.style,
-              token,
-            }),
-          );
-        });
-      } else {
-        return undefined;
-      }
-    }
-    // TODO: publish images in the gist
-    case "gist":
-      return undefined;
-    case "local": {
-      const { resolver } = location;
-      return resolver
-        ? resolver(relativePath)
-        : fetchResource(relativePath, workspace);
-    }
-  }
-};
-
-/**
- * (browser-only) Downloads any given exported SVG to the user's computer
- * @param svg
- * @param title the filename
- */
-export const DownloadSVG = (
-  svg: SVGSVGElement,
-  title = "illustration",
-  dslStr: string,
-  subStr: string,
-  styleStr: string,
-  versionStr: string,
-  variationStr: string,
-): void => {
-  SVGaddCode(svg, dslStr, subStr, styleStr, versionStr, variationStr);
-  // optimize the svg output
-  const svgStr = optimize(svg.outerHTML, {
-    plugins: ["inlineStyles", "prefixIds"],
-    path: title,
-  }).data;
-  const blob = new Blob([svgStr], {
-    type: "image/svg+xml;charset=utf-8",
-  });
-  const url = URL.createObjectURL(blob);
-  const downloadLink = document.createElement("a");
-  downloadLink.href = url;
-  downloadLink.download = `${title}.svg`;
-  document.body.appendChild(downloadLink);
-  downloadLink.click();
-  document.body.removeChild(downloadLink);
-};
-
-/**
- * Given an SVG, program triple, and version and variation strings,
- * appends penrose tags to the SVG so the SVG can be reuploaded and edited.
- *
- * @param svg
- * @param dslStr the domain file
- * @param subStr the substance file
- * @param styleStr the style file
- * @param versionStr
- * @param variationStr
- */
-const SVGaddCode = (
-  svg: SVGSVGElement,
-  dslStr: string,
-  subStr: string,
-  styleStr: string,
-  versionStr: string,
-  variationStr: string,
-): void => {
-  // Create custom <penrose> tag to store metadata, or grab it if it already exists
-  const metadataQuery = document.querySelector("penrose");
-  let metadata: Element;
-
-  if (metadataQuery === null) {
-    metadata = document.createElementNS(
-      "https://penrose.cs.cmu.edu/metadata",
-      "penrose",
-    );
-  } else {
-    metadata = metadataQuery!;
-  }
-
-  // Create <version> tag for penrose version
-  const version = document.createElementNS(
-    "https://penrose.cs.cmu.edu/version",
-    "version",
-  );
-  version.insertAdjacentText("afterbegin", versionStr);
-
-  // Create <variation> tag for variation string
-  const variation = document.createElementNS(
-    "https://penrose.cs.cmu.edu/variation",
-    "variation",
-  );
-  variation.insertAdjacentText("afterbegin", variationStr);
-
-  // Create <sub> tag to store .substance code
-  const substance = document.createElementNS(
-    "https://penrose.cs.cmu.edu/substance",
-    "sub",
-  );
-  substance.insertAdjacentText("afterbegin", subStr);
-
-  // Create <sty> tag to store .style code
-  const style = document.createElementNS(
-    "https://penrose.cs.cmu.edu/style",
-    "sty",
-  );
-  style.insertAdjacentText("afterbegin", styleStr);
-
-  // Create <dsl> tag to store .domain code
-  const dsl = document.createElementNS("https://penrose.cs.cmu.edu/dsl", "dsl");
-  dsl.insertAdjacentText("afterbegin", dslStr);
-
-  // Add these new tags under the <penrose> metadata tag
-  metadata.appendChild(version);
-  metadata.appendChild(variation);
-  metadata.appendChild(substance);
-  metadata.appendChild(style);
-  metadata.appendChild(dsl);
-
-  // Add the <penrose> metadata tag to the parent <svg> tag
-  svg.appendChild(metadata);
-};
-
-/**
- * (browser-only) Downloads any given exported PNG to the user's computer
- * @param svg
- * @param title the filename
- * @param width canvas and SVG width
- * @param height canvas and SVG height
- */
-export const DownloadPNG = (
-  svg: SVGSVGElement,
-  title = "illustration",
-  width: number,
-  height: number,
-  scale: number,
-): void => {
-  // duplicate node to set concrete dimensions
-  const svgNode = svg.cloneNode(true) as SVGSVGElement;
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d")!;
-  // NOTE: need to set _both_ the SVG node and canvas dimensions to render properly
-  const scaledWidth = width * scale;
-  const scaledHeight = height * scale;
-  canvas.width = scaledWidth;
-  canvas.height = scaledHeight;
-  svgNode.setAttribute("width", scaledWidth.toString());
-  svgNode.setAttribute("height", scaledHeight.toString());
-  const data = new XMLSerializer().serializeToString(svgNode);
-  const DOMURL = window.URL || window.webkitURL || window;
-
-  const img = new Image();
-  const svgBlob = new Blob([data], {
-    type: "image/svg+xml;charset=utf-8",
-  });
-  const url = DOMURL.createObjectURL(svgBlob);
-
-  img.onload = function () {
-    ctx.drawImage(img, 0, 0);
-    DOMURL.revokeObjectURL(url);
-
-    const imgURI = canvas
-      .toDataURL("image/png")
-      .replace("image/png", "image/octet-stream");
-    const downloadLink = document.createElement("a");
-    downloadLink.href = imgURI;
-    downloadLink.download = title;
-    document.body.appendChild(downloadLink);
-    downloadLink.click();
-    document.body.removeChild(downloadLink);
-  };
-  img.src = url;
-};
+const DiagramPanelButtonContainer = styled.div`
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: 100%;
+  justify-content: space-around;
+`;
 
 export default function DiagramPanel() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [diagram, setDiagram] = useRecoilState(diagramState);
+  const [_, setCanvasState] = useRecoilState(canvasState);
   const { state, error, warnings, metadata } = diagram;
   const [showEasterEgg, setShowEasterEgg] = useState(false);
-  const { interactive } = useRecoilValue(diagramMetadataSelector);
   const workspace = useRecoilValue(workspaceMetadataSelector);
   const rogerState = useRecoilValue(currentRogerState);
+  const [workerState, setWorkerState] = useRecoilState(diagramWorkerState);
+  const [computeLayoutRunning, setComputeLayoutRunning] = useState(false);
+  const settings = useRecoilValueLoadable(settingsState);
 
-  const requestRef = useRef<number>();
+  // keep a map from paths to title elements, so we can grab their parent svg elements
+  const [svgTitleCache, setSvgTitleCache] = useState<Map<string, SVGElement>>(
+    new Map(),
+  );
+
+  const currDiagramId = useRef<DiagramID | null>(null);
+  const currStepSequenceId = useRef<StepSequenceID | null>(null);
+
+  const isMobile = useMediaQuery({ query: "(max-width: 768px)" });
+  const compileDiagram = useCompileDiagram();
+  const resampleDiagram = useResampleDiagram();
 
   useEffect(() => {
     const cur = canvasRef.current;
+    setCanvasState({ ref: canvasRef }); // required for downloading/exporting diagrams
     if (state !== null && cur !== null) {
       (async () => {
-        // render the current frame
-        const rendered = interactive
-          ? await toInteractiveSVG(
-              state,
-              (newState: PenroseState) => {
-                setDiagram({
-                  ...diagram,
-                  state: newState,
-                });
-                step();
-              },
-              (path) => pathResolver(path, rogerState, workspace),
-              "diagramPanel",
-            )
-          : await toSVG(
-              state,
-              (path) => pathResolver(path, rogerState, workspace),
-              "diagramPanel",
-            );
+        const titleCache = new Map<string, SVGElement>();
+        const rendered = await stateToSVG(state, {
+          pathResolver: (path: string) =>
+            pathResolver(path, rogerState, workspace),
+          width: "100%",
+          height: "100%",
+          texLabels: false,
+          titleCache,
+        });
         rendered.setAttribute("width", "100%");
         rendered.setAttribute("height", "100%");
         if (cur.firstElementChild) {
@@ -322,147 +83,149 @@ export default function DiagramPanel() {
         } else {
           cur.appendChild(rendered);
         }
+
+        setSvgTitleCache(titleCache);
+        setDiagram((state) => ({
+          ...state,
+          svg: rendered,
+        }));
       })();
     } else if (state === null && cur !== null) {
       cur.innerHTML = "";
     }
-  }, [diagram.state]);
+  }, [state, settings.contents.interactive]);
 
+  // attach event listeners that trigger interaction but constrain dragging
   useEffect(() => {
-    // request the next frame if the diagram state updates
-    requestRef.current = requestAnimationFrame(step);
-    // Make sure the effect runs only once. Otherwise there might be other `step` calls running in the background causing race conditions
-    return () => cancelAnimationFrame(requestRef.current!);
-  }, [diagram.state]);
+    if (settings.contents.interactive === "PlayMode") {
+      renderPlayModeInteractivity(
+        diagram,
+        svgTitleCache,
+        setDiagram,
+        setWorkerState,
+      );
+    }
+  }, [diagram, svgTitleCache, settings.contents.interactive]);
 
-  const step = () => {
-    if (state) {
-      if (!isOptimized(state) && metadata.autostep) {
-        const stepResult = stepTimes(state, metadata.stepSize);
-        if (stepResult.isErr()) {
-          setDiagram({
-            ...diagram,
-            error: stepResult.error,
-          });
-        } else {
-          setDiagram({
-            ...diagram,
-            error: null,
-            state: stepResult.value,
-          });
-        }
+  // starts a chain of callbacks, running every animation frame, to compute the
+  // most recent shapes, until it sees that the step sequence it was given has
+  // finished optimizing, or `computeLayoutShouldStop` is set.
+  const runComputeLayout = async () => {
+    const diagramId = currDiagramId.current;
+    const stepSequenceId = currStepSequenceId.current;
+
+    if (diagramId === null || stepSequenceId === null) {
+      setComputeLayoutRunning(false);
+      return;
+    }
+
+    // get updated history info for the diagram
+    const pollResult = await optimizer.poll(diagramId);
+    if (isErr(pollResult)) {
+      setDiagram((diagram) => ({
+        ...diagram,
+        error: runtimeError(showOptimizerError(pollResult.error)),
+      }));
+      setComputeLayoutRunning(false);
+      return;
+    }
+
+    // get history of the current step sequence
+    const stepSequenceInfo = pollResult.value.get(stepSequenceId);
+    if (!stepSequenceInfo) {
+      setDiagram((diagram) => ({
+        ...diagram,
+        error: runtimeError(
+          `Invalid step sequence id ${stepSequenceId} for diagram`,
+        ),
+      }));
+      setComputeLayoutRunning(false);
+      return;
+    }
+
+    const newHistoryLoc = {
+      sequenceId: stepSequenceId,
+      frame: stepSequenceInfo.layoutStats.at(-1)!.cumulativeFrames - 1,
+    };
+
+    // cache so we can set once at end (profiling shows this is fairly critical)
+    let newDiagram: Partial<Diagram> = {
+      historyInfo: pollResult.value,
+      historyLoc: newHistoryLoc,
+    };
+
+    // compute the most recent shapes for the step sequence
+    const layoutResult = await optimizer.computeLayout(
+      diagramId,
+      newHistoryLoc,
+    );
+
+    if (layoutResult.isErr()) {
+      newDiagram = {
+        ...newDiagram,
+        error: isPenroseError(layoutResult.error)
+          ? layoutResult.error
+          : runtimeError(showOptimizerError(layoutResult.error)),
+      };
+      // don't return here, since we want to check whether the step sequence has
+      // stopped optimizing, and set the diagram state accordingly
+    } else {
+      newDiagram = {
+        ...newDiagram,
+        state: layoutResult.value,
+      };
+    }
+
+    if (stepSequenceInfo.state.tag == "Pending") {
+      requestAnimationFrame(() => runComputeLayout());
+    } else {
+      // state is either "done" or an OptimizationError; either case we quit
+      setWorkerState((worker) => ({
+        ...worker,
+        optimizing: false,
+      }));
+      setComputeLayoutRunning(false);
+
+      if (stepSequenceInfo.state.tag === "OptimizationError") {
+        const error = stepSequenceInfo.state;
+        newDiagram = {
+          ...newDiagram,
+          error: runtimeError(showOptimizerError(error)),
+        };
       }
     }
+
+    // if step sequence has changed (interaction or resample), don't commit
+    setDiagram((diagram) => {
+      if (
+        diagram.historyLoc?.sequenceId === newDiagram.historyLoc?.sequenceId
+      ) {
+        return {
+          ...diagram,
+          ...newDiagram,
+        };
+      } else {
+        return diagram;
+      }
+    });
   };
 
-  const downloadSvg = useRecoilCallback(({ snapshot }) => () => {
-    if (canvasRef.current !== null) {
-      const svg = canvasRef.current.firstElementChild as SVGSVGElement;
-      if (svg !== null) {
-        const metadata = snapshot.getLoadable(workspaceMetadataSelector)
-          .contents as WorkspaceMetadata;
-        const diagram = snapshot.getLoadable(diagramMetadataSelector)
-          .contents as DiagramMetadata;
-        const domain = snapshot.getLoadable(fileContentsSelector("domain"))
-          .contents as ProgramFile;
-        const substance = snapshot.getLoadable(
-          fileContentsSelector("substance"),
-        ).contents as ProgramFile;
-        const style = snapshot.getLoadable(fileContentsSelector("style"))
-          .contents as ProgramFile;
-        DownloadSVG(
-          svg,
-          metadata.name,
-          domain.contents,
-          substance.contents,
-          style.contents,
-          metadata.editorVersion.toString(),
-          diagram.variation,
-        );
-      }
-    }
-  });
+  // stop whenever either active id changes (but we will restart very quickly)
+  useEffect(() => {
+    currDiagramId.current = diagram.diagramId;
+    currStepSequenceId.current = diagram.historyLoc?.sequenceId ?? null;
+  }, [diagram.diagramId, diagram.historyLoc?.sequenceId]);
 
-  // download an svg with raw TeX labels
-  const downloadSvgTex = useRecoilCallback(({ snapshot }) => async () => {
-    if (canvasRef.current !== null) {
-      const { state } = snapshot.getLoadable(diagramState).contents as Diagram;
-      if (state !== null) {
-        const svg = await toSVG(
-          state,
-          (path) => pathResolver(path, rogerState, workspace),
-          "diagramPanel",
-          true,
-        );
-        const metadata = snapshot.getLoadable(workspaceMetadataSelector)
-          .contents as WorkspaceMetadata;
-        const diagram = snapshot.getLoadable(diagramMetadataSelector)
-          .contents as DiagramMetadata;
-        const domain = snapshot.getLoadable(fileContentsSelector("domain"))
-          .contents as ProgramFile;
-        const substance = snapshot.getLoadable(
-          fileContentsSelector("substance"),
-        ).contents as ProgramFile;
-        const style = snapshot.getLoadable(fileContentsSelector("style"))
-          .contents as ProgramFile;
-        DownloadSVG(
-          svg,
-          metadata.name,
-          domain.contents,
-          substance.contents,
-          style.contents,
-          metadata.editorVersion.toString(),
-          diagram.variation,
-        );
-      }
+  useEffect(() => {
+    if (!computeLayoutRunning && workerState.optimizing) {
+      setComputeLayoutRunning(true);
+      requestAnimationFrame(() => runComputeLayout());
     }
-  });
+  }, [computeLayoutRunning, workerState]);
 
-  const downloadPng = useRecoilCallback(({ snapshot }) => async () => {
-    if (canvasRef.current !== null) {
-      const svg = canvasRef.current.firstElementChild as SVGSVGElement;
-      if (svg !== null) {
-        const metadata = snapshot.getLoadable(workspaceMetadataSelector)
-          .contents as WorkspaceMetadata;
-        const filename = `${metadata.name}.png`;
-        if (diagram.state) {
-          const { canvas: canvasDims } = diagram.state;
-          const { width, height } = canvasDims;
-          DownloadPNG(svg, filename, width, height, 1);
-        }
-      }
-    }
-  });
-
-  const downloadPdf = useRecoilCallback(
-    ({ snapshot }) =>
-      () => {
-        if (canvasRef.current !== null) {
-          const svg = canvasRef.current.firstElementChild as SVGSVGElement;
-          if (svg !== null && state) {
-            const metadata = snapshot.getLoadable(workspaceMetadataSelector)
-              .contents as WorkspaceMetadata;
-            const openedWindow = window.open(
-              "",
-              "PRINT",
-              `height=${state.canvas.height},width=${state.canvas.width}`,
-            );
-            if (openedWindow === null) {
-              toast.error("Couldn't open popup to print");
-              return;
-            }
-            openedWindow.document.write(
-              `<!DOCTYPE html><head><title>${metadata.name}</title></head><body>`,
-            );
-            openedWindow.document.write(svg.outerHTML);
-            openedWindow.document.write("</body></html>");
-            openedWindow.document.close();
-            openedWindow.focus();
-            openedWindow.print();
-          }
-        }
-      },
-    [state],
+  const layoutTimeline = useRecoilValue(layoutTimelineState);
+  const unexcludedWarnings = warnings.filter(
+    (w) => metadata.excludeWarnings.find((s) => w.tag === s) === undefined,
   );
 
   return (
@@ -473,20 +236,13 @@ export default function DiagramPanel() {
           flexDirection: "column",
           maxHeight: "100%",
           width: "100%",
+          marginBottom: "10px",
         }}
       >
         {state === null && (
           <span onClick={() => setShowEasterEgg((s) => !s)}>
             press compile to see diagram
           </span>
-        )}
-        {state && (
-          <div style={{ display: "flex" }}>
-            <BlueButton onClick={downloadSvg}>SVG</BlueButton>
-            <BlueButton onClick={downloadSvgTex}>SVG (TeX)</BlueButton>
-            <BlueButton onClick={downloadPng}>PNG</BlueButton>
-            <BlueButton onClick={downloadPdf}>PDF</BlueButton>
-          </div>
         )}
         {error && (
           <div
@@ -511,7 +267,7 @@ export default function DiagramPanel() {
             </pre>
           </div>
         )}
-        {warnings.length > 0 && (
+        {unexcludedWarnings.length > 0 && (
           <div
             style={{
               bottom: 0,
@@ -530,7 +286,9 @@ export default function DiagramPanel() {
               warnings
             </span>
             <pre style={{ whiteSpace: "pre-wrap" }}>
-              {warnings.map((w) => showError(w).toString()).join("\n")}
+              {unexcludedWarnings
+                .map((w) => showError(w).toString())
+                .join("\n")}
             </pre>
           </div>
         )}
@@ -539,10 +297,31 @@ export default function DiagramPanel() {
             display: "flex",
             minHeight: "60%",
             maxHeight: "100%",
+            margin: "10px",
             justifyContent: "center",
           }}
           ref={canvasRef}
-        />
+        >
+          {diagram.svg &&
+            state &&
+            !workerState.compiling &&
+            !workerState.resampling &&
+            settings.contents.interactive === "EditMode" &&
+            diagram.diagramId !== null &&
+            diagram.historyLoc !== null && (
+              <InteractivityOverlay
+                diagramSVG={diagram.svg}
+                state={state}
+                svgTitleCache={svgTitleCache}
+                diagramId={diagram.diagramId}
+                historyLoc={diagram.historyLoc}
+                pinnedInputPaths={
+                  diagram.historyInfo?.get(diagram.historyLoc.sequenceId)
+                    ?.pinnedInputPaths ?? null
+                }
+              />
+            )}
+        </div>
 
         {showEasterEgg && (
           <iframe
@@ -553,6 +332,24 @@ export default function DiagramPanel() {
             frameBorder="0"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           ></iframe>
+        )}
+        <LayoutTimelineSlider />
+
+        {isMobile && (
+          <DiagramPanelButtonContainer>
+            <BlueButton
+              disabled={workerState.compiling}
+              onClick={compileDiagram}
+            >
+              compile
+            </BlueButton>
+            <BlueButton
+              disabled={workerState.compiling}
+              onClick={resampleDiagram}
+            >
+              resample
+            </BlueButton>
+          </DiagramPanelButtonContainer>
         )}
       </div>
     </div>

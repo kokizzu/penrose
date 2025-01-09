@@ -1,18 +1,34 @@
-import { Params } from "@penrose/optimizer";
+import { Params } from "../engine/Optimizer.js";
 import { Canvas, InputMeta } from "../shapes/Samplers.js";
 import { Shape } from "../shapes/Shapes.js";
 import * as ad from "./ad.js";
 import { A } from "./ast.js";
 import { StyleWarning } from "./errors.js";
 import { ConstrFn, ObjFn } from "./style.js";
-import { WithContext } from "./styleSemantics.js";
-import { FloatV } from "./value.js";
+import { Resolved } from "./stylePathResolution.js";
+import { ArgVal, FloatV } from "./value.js";
 
 export type ShapeFn = (xs: number[]) => Shape<number>[];
 
 export type OptPipeline = string[];
 
 export type StagedConstraints = Map<string, ad.Masks>;
+
+/**
+ * For each path with a some optimized value, get that value with each ad.Num
+ * replaced by either an index into `inputs` if this was an ad.Var (and thus lives
+ * somewhere in `inputs`), or undefined if it was a `number`.
+ */
+export type IdxsByPath = Map<string, ArgVal<number | undefined>>;
+
+export interface InteractivityInfo {
+  inputIdxsByPath: IdxsByPath;
+  translatableShapePaths: Set<string>;
+  scalableShapePaths: Set<string>;
+  // Map of paths to strings of bodies of functions over mouse coordinates
+  draggingConstraints: Map<string, string>;
+  shapesByPath: Map<string, Shape<ad.Num>>;
+}
 
 export interface InputInfo {
   handle: ad.Var;
@@ -33,11 +49,12 @@ export interface State {
   labelCache: LabelCache;
   shapes: Shape<ad.Num>[];
   canvas: Canvas;
-  gradient: ad.Gradient;
   currentStageIndex: number;
   optStages: string[];
-  computeShapes: ShapeFn;
   params: Params;
+  gradient: ad.Gradient;
+  computeShapes: ShapeFn;
+  interactivityInfo: InteractivityInfo;
 }
 
 /**
@@ -45,24 +62,37 @@ export interface State {
  */
 
 export type LabelData = EquationData | TextData;
-export interface EquationData {
+export type EquationData = {
   tag: "EquationData";
-  width: FloatV<number>;
-  height: FloatV<number>;
-  descent: FloatV<number>;
-  ascent: FloatV<number>;
+} & EquationMeasurement;
+
+export interface EquationShape {
   rendered: HTMLElement;
 }
 
-export interface TextData {
-  tag: "TextData";
+export interface EquationMeasurement {
   width: FloatV<number>;
   height: FloatV<number>;
   descent: FloatV<number>;
   ascent: FloatV<number>;
 }
 
-export type LabelCache = Map<string, LabelData>;
+export type TextData = {
+  tag: "TextData";
+} & TextMeasurement;
+
+export interface TextMeasurement {
+  width: FloatV<number>;
+  height: FloatV<number>;
+  descent: FloatV<number>;
+  ascent: FloatV<number>;
+}
+
+// Cache of label measurements and MathJax-rendered math labels for `Equation`s
+export type LabelCache = Map<string, (EquationData & EquationShape) | TextData>;
+
+// A Label Cache but without the rendered HTMLElement
+export type LabelMeasurements = Map<string, LabelData>;
 
 export type OptStages = "All" | Set<string>;
 
@@ -70,7 +100,7 @@ export type OptStages = "All" | Set<string>;
  * Generic export interface for constraint or objective functions
  */
 export interface Fn {
-  ast: WithContext<ObjFn<A> | ConstrFn<A>>;
+  ast: Resolved<ObjFn<A> | ConstrFn<A>>;
   output: ad.Num;
   optStages: OptStages;
 }
